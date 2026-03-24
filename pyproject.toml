@@ -7,12 +7,15 @@ requires-python = ">=3.11"
 dependencies = [
     "dagshub>=0.6.3",
     "feast[redis]>=0.60.0",
+    "fastapi>=0.115.0",
     "joblib>=1.4.2",
     "mlflow>=3.10.1",
     "pandas>=2.2.0",
+    "pydantic>=2.10.0",
     "pyarrow>=20.0.0",
     "python-dotenv>=1.1.0",
     "scikit-learn>=1.7.0",
     "torch>=2.10.0",
+    "uvicorn>=0.34.0",
     "yfinance>=1.2.0",
 ]
