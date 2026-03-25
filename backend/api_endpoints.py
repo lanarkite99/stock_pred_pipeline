@@ -2,9 +2,11 @@ import asyncio
 import logging
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from backend.state import PREDICTION_COUNTER, PREDICTION_LATENCY
+from backend.tasks import get_or_set_cache, get_task_status_redis, run_training
 from src.config import Config
 from src.exception import PipelineError
 from src.pipelines.inference_pipeline import predict_child, predict_parent
@@ -47,6 +49,7 @@ def root():
         "endpoints": {
             "GET /": "Project summary",
             "GET /health": "Health check",
+            "GET /status/{task_id}": "Get async training task status",
             "POST /train-parent": "Train parent market model",
             "POST /train-child": "Train child model for a ticker",
             "POST /predict-parent": "Predict using parent model",
@@ -66,15 +69,26 @@ def health():
     return {"status": "healthy"}
 
 
+@router.get("/status/{task_id}")
+def get_task_status(task_id: str):
+    status = get_task_status_redis(task_id)
+    if not status:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    return {"task_id": task_id, **status}
+
+
 @router.post("/train-parent")
-async def train_parent_endpoint():
+async def train_parent_endpoint(response: Response):
+    task_id = "parent_training"
+    current_status = get_task_status_redis(task_id)
+    if current_status and current_status.get("status") == "running":
+        response.status_code = 202
+        return {"status": "running", "task_id": task_id}
+
     try:
-        result = await asyncio.to_thread(train_parent_model)
-        return {
-            "status": "completed",
-            "model_exists": os.path.exists(_parent_model_path()),
-            "result": result,
-        }
+        await run_training(task_id, train_parent_model)
+        response.status_code = 202
+        return {"status": "started", "task_id": task_id}
     except PipelineError as e:
         logger.error(f"Parent training failed: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -84,18 +98,21 @@ async def train_parent_endpoint():
 
 
 @router.post("/train-child")
-async def train_child_endpoint(request: TickerRequest):
+async def train_child_endpoint(request: TickerRequest, response: Response):
     ticker = request.ticker.strip().upper()
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker is required")
 
+    task_id = ticker.lower()
+    current_status = get_task_status_redis(task_id)
+    if current_status and current_status.get("status") == "running":
+        response.status_code = 202
+        return {"status": "running", "task_id": task_id}
+
     try:
-        result = await asyncio.to_thread(train_child_model, ticker)
-        return {
-            "status": "completed",
-            "model_exists": os.path.exists(_child_model_path(ticker)),
-            "result": result,
-        }
+        await run_training(task_id, train_child_model, ticker)
+        response.status_code = 202
+        return {"status": "started", "task_id": task_id}
     except PipelineError as e:
         logger.error(f"Child training failed for {ticker}: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -107,8 +124,16 @@ async def train_child_endpoint(request: TickerRequest):
 @router.post("/predict-parent")
 async def predict_parent_endpoint():
     try:
-        result = await asyncio.to_thread(predict_parent)
-        return {"status": "completed", "result": result}
+        PREDICTION_COUNTER.labels("parent").inc()
+        start = asyncio.get_event_loop().time()
+        result, cached = await asyncio.to_thread(
+            get_or_set_cache,
+            "predict_parent",
+            predict_parent,
+            86400,
+        )
+        PREDICTION_LATENCY.labels("parent").observe(asyncio.get_event_loop().time() - start)
+        return {"status": "completed", "cached": cached, "result": result}
     except PipelineError as e:
         status_code = 404 if _not_found_for_missing_artifact(e) else 500
         raise HTTPException(status_code=status_code, detail=str(e)) from e
@@ -124,8 +149,17 @@ async def predict_child_endpoint(request: TickerRequest):
         raise HTTPException(status_code=400, detail="ticker is required")
 
     try:
-        result = await asyncio.to_thread(predict_child, ticker)
-        return {"status": "completed", "result": result}
+        cache_key = f"predict_child:{ticker.lower()}"
+        PREDICTION_COUNTER.labels("child").inc()
+        start = asyncio.get_event_loop().time()
+        result, cached = await asyncio.to_thread(
+            get_or_set_cache,
+            cache_key,
+            lambda: predict_child(ticker),
+            86400,
+        )
+        PREDICTION_LATENCY.labels("child").observe(asyncio.get_event_loop().time() - start)
+        return {"status": "completed", "cached": cached, "result": result}
     except PipelineError as e:
         status_code = 404 if _not_found_for_missing_artifact(e) else 500
         raise HTTPException(status_code=status_code, detail=str(e)) from e
