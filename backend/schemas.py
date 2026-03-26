@@ -58,3 +58,4 @@ class AnalyzeResponse(BaseModel):
     prediction: dict[str, Any]
     thread_id: str | None = None
     use_fmi: bool = False
+    cached: bool = False

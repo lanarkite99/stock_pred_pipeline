@@ -9,6 +9,7 @@ dependencies = [
     "feast[redis]>=0.60.0",
     "fastapi>=0.115.0",
     "joblib>=1.4.2",
+    "chromadb>=1.0.15",
     "langchain-community>=0.3.0",
     "langchain-core>=0.3.0",
     "langchain-ollama>=0.3.0",

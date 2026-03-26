@@ -245,7 +245,6 @@ async def analyze(request: AnalyzeRequest, response: Response):
         raise HTTPException(status_code=400, detail="ticker is required")
 
     prediction_cache_key = f"predict_child:{ticker.lower()}"
-    analyze_cache_key = f"analyze:{ticker.lower()}"
 
     def build_analysis():
         from src.agents.langgraph_wrapper import analyze_stock
@@ -257,12 +256,7 @@ async def analyze(request: AnalyzeRequest, response: Response):
         )
 
     try:
-        result, _ = await asyncio.to_thread(
-            get_or_set_cache,
-            analyze_cache_key,
-            build_analysis,
-            86400,
-        )
+        result = await asyncio.to_thread(build_analysis)
         return result
     except PipelineError as e:
         if _not_found_for_missing_artifact(e):

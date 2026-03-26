@@ -26,8 +26,14 @@ except Exception:
 def fetch_pred_data(ticker):
     try:
         from src.pipelines.inference_pipeline import predict_child
+        from backend.tasks import get_or_set_cache
 
-        return predict_child(ticker)
+        result, _ = get_or_set_cache(
+            f"predict_child:{ticker.lower()}",
+            lambda: predict_child(ticker),
+            86400,
+        )
+        return result
     except PipelineError:
         raise
     except Exception as e:

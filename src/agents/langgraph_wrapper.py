@@ -1,3 +1,5 @@
+import os
+
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
@@ -5,6 +7,15 @@ from langgraph.graph import END, MessagesState, StateGraph
 from src.agents.agents import perf_analyst, report_generator
 from src.agents.fetch import fetch_pred_data
 from src.exception import PipelineError
+from src.memory.semantic_cache import SemanticCache
+from logger.logger import get_logger
+
+try:
+    from langchain_ollama import OllamaEmbeddings
+except ImportError:
+    OllamaEmbeddings = None
+
+logger = get_logger()
 
 
 class AgentState(MessagesState):
@@ -29,8 +40,52 @@ def build_graph():
     return g.compile(checkpointer=MemorySaver())
 
 
+def _get_embedder():
+    if OllamaEmbeddings is None:
+        logger.info("semantic cache disabled: langchain_ollama embeddings unavailable")
+        return None
+    try:
+        return OllamaEmbeddings(
+            model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        )
+    except Exception as e:
+        logger.warning("semantic cache embedder init failed: %s", e)
+        return None
+
+
 def analyze_stock(ticker, thread_id=None, use_fmi=False):
     ticker_u = ticker.upper()
+    embedder = _get_embedder()
+    query_vec = None
+
+    if embedder is not None:
+        try:
+            cache = SemanticCache(collection_name="analysis_cache")
+            query_text = f"Analysis report for {ticker_u}"
+            query_vec = embedder.embed_query(query_text)
+            hits = cache.recall(query_vec, ticker=ticker_u, limit=3)
+            if hits:
+                hits.sort(key=lambda item: int(item.get("created_at_ts", 0)), reverse=True)
+                best = hits[0]
+                logger.info("semantic cache hit for %s", ticker_u)
+                return {
+                    "status": "completed",
+                    "ticker": ticker_u,
+                    "recommendation": best.get("recommendation", "NEUTRAL"),
+                    "confidence": best.get("confidence", "Medium"),
+                    "summary": best.get("summary", ""),
+                    "final_report": best.get("final_report", best.get("summary", "")),
+                    "news_sentiment": best.get("news_sentiment", ""),
+                    "prediction": __import__("json").loads(best.get("prediction_json", "{}")),
+                    "thread_id": best.get("thread_id") or thread_id,
+                    "use_fmi": bool(best.get("use_fmi", use_fmi)),
+                    "cached": True,
+                }
+            logger.info("semantic cache miss for %s", ticker_u)
+        except Exception as e:
+            logger.exception("semantic cache recall failed for %s: %s", ticker_u, e)
+
     pred_data = fetch_pred_data(ticker_u)
 
     if pred_data == "__MODEL_TRAINING__":
@@ -80,8 +135,7 @@ def analyze_stock(ticker, thread_id=None, use_fmi=False):
 
     final_report = res.get("final_report", "")
     summary = final_report.strip().split("\n\n", 1)[0].strip() if final_report else ""
-
-    return {
+    result = {
         "status": "completed",
         "ticker": ticker_u,
         "recommendation": res.get("recommendation", "NEUTRAL"),
@@ -92,4 +146,29 @@ def analyze_stock(ticker, thread_id=None, use_fmi=False):
         "prediction": pred_data,
         "thread_id": thread_id,
         "use_fmi": use_fmi,
+        "cached": False,
     }
+
+    if embedder is not None and query_vec is not None and final_report:
+        try:
+            history = pred_data.get("history", [])
+            last_price = float(history[-1]["close"]) if history else 0.0
+            cache = SemanticCache(collection_name="analysis_cache")
+            cache.save_episode(
+                ticker=ticker_u,
+                summary=summary,
+                final_report=final_report,
+                embedding=query_vec,
+                recommendation=result["recommendation"],
+                confidence=result["confidence"],
+                last_price=last_price,
+                prediction=pred_data,
+                news_sentiment=result["news_sentiment"],
+                thread_id=thread_id,
+                use_fmi=use_fmi,
+            )
+            logger.info("semantic cache save succeeded for %s", ticker_u)
+        except Exception as e:
+            logger.exception("semantic cache save failed for %s: %s", ticker_u, e)
+
+    return result
