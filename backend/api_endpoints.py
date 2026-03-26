@@ -1,24 +1,27 @@
 import asyncio
-import logging
 import os
 
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel, Field
 
+from backend.schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    HealthResponse,
+    PredictionCompletedResponse,
+    RootResponse,
+    TaskStatusResponse,
+    TickerRequest,
+    TrainingAcceptedResponse,
+)
 from backend.state import PREDICTION_COUNTER, PREDICTION_LATENCY
 from backend.tasks import get_or_set_cache, get_task_status_redis, run_training
+from logger.logger import get_logger
 from src.config import Config
 from src.exception import PipelineError
-from src.pipelines.inference_pipeline import predict_child, predict_parent
-from src.pipelines.train_pipeline import train_child_model, train_parent_model
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 router = APIRouter()
 config = Config()
-
-
-class TickerRequest(BaseModel):
-    ticker: str = Field(..., min_length=1, description="Yahoo Finance ticker, e.g. RELIANCE.NS")
 
 
 def _child_model_path(ticker: str) -> str:
@@ -34,7 +37,25 @@ def _not_found_for_missing_artifact(exc: Exception) -> bool:
     return "missing pytorch model" in message or "missing scaler" in message or "not found" in message
 
 
-@router.get("/")
+async def _start_auto_training(task_id: str, train_fn, chain_fn, detail: str):
+    current_status = get_task_status_redis(task_id)
+    if current_status and current_status.get("status") == "running":
+        return {"status": "training", "detail": detail, "task_id": task_id}
+
+    await run_training(task_id, train_fn, chain_fn=chain_fn)
+    return {"status": "training", "detail": detail, "task_id": task_id}
+
+
+async def _start_auto_training_with_args(task_id: str, train_fn, train_args: tuple, chain_fn, detail: str):
+    current_status = get_task_status_redis(task_id)
+    if current_status and current_status.get("status") == "running":
+        return {"status": "training", "detail": detail, "task_id": task_id}
+
+    await run_training(task_id, train_fn, *train_args, chain_fn=chain_fn)
+    return {"status": "training", "detail": detail, "task_id": task_id}
+
+
+@router.get("/", response_model=RootResponse)
 def root():
     return {
         "project": "agentic-stock-pred-end2end",
@@ -54,22 +75,24 @@ def root():
             "POST /train-child": "Train child model for a ticker",
             "POST /predict-parent": "Predict using parent model",
             "POST /predict-child": "Predict using child model for a ticker",
+            "POST /analyze": "Generate a minimal analysis summary for a ticker",
         },
         "quick_start": {
             "train_parent": {"method": "POST", "path": "/train-parent"},
             "train_child": {"method": "POST", "path": "/train-child", "body": {"ticker": "RELIANCE.NS"}},
             "predict_parent": {"method": "POST", "path": "/predict-parent"},
             "predict_child": {"method": "POST", "path": "/predict-child", "body": {"ticker": "RELIANCE.NS"}},
+            "analyze": {"method": "POST", "path": "/analyze", "body": {"ticker": "RELIANCE.NS"}},
         },
     }
 
 
-@router.get("/health")
+@router.get("/health", response_model=HealthResponse)
 def health():
     return {"status": "healthy"}
 
 
-@router.get("/status/{task_id}")
+@router.get("/status/{task_id}", response_model=TaskStatusResponse)
 def get_task_status(task_id: str):
     status = get_task_status_redis(task_id)
     if not status:
@@ -77,7 +100,7 @@ def get_task_status(task_id: str):
     return {"task_id": task_id, **status}
 
 
-@router.post("/train-parent")
+@router.post("/train-parent", response_model=TrainingAcceptedResponse)
 async def train_parent_endpoint(response: Response):
     task_id = "parent_training"
     current_status = get_task_status_redis(task_id)
@@ -86,6 +109,8 @@ async def train_parent_endpoint(response: Response):
         return {"status": "running", "task_id": task_id}
 
     try:
+        from src.pipelines.train_pipeline import train_parent_model
+
         await run_training(task_id, train_parent_model)
         response.status_code = 202
         return {"status": "started", "task_id": task_id}
@@ -97,7 +122,7 @@ async def train_parent_endpoint(response: Response):
         raise HTTPException(status_code=500, detail="parent training failed") from e
 
 
-@router.post("/train-child")
+@router.post("/train-child", response_model=TrainingAcceptedResponse)
 async def train_child_endpoint(request: TickerRequest, response: Response):
     ticker = request.ticker.strip().upper()
     if not ticker:
@@ -110,6 +135,8 @@ async def train_child_endpoint(request: TickerRequest, response: Response):
         return {"status": "running", "task_id": task_id}
 
     try:
+        from src.pipelines.train_pipeline import train_child_model
+
         await run_training(task_id, train_child_model, ticker)
         response.status_code = 202
         return {"status": "started", "task_id": task_id}
@@ -121,9 +148,14 @@ async def train_child_endpoint(request: TickerRequest, response: Response):
         raise HTTPException(status_code=500, detail=f"child training failed for {ticker}") from e
 
 
-@router.post("/predict-parent")
-async def predict_parent_endpoint():
+@router.post(
+    "/predict-parent",
+    response_model=PredictionCompletedResponse | TrainingAcceptedResponse,
+)
+async def predict_parent_endpoint(response: Response):
     try:
+        from src.pipelines.inference_pipeline import predict_parent
+
         PREDICTION_COUNTER.labels("parent").inc()
         start = asyncio.get_event_loop().time()
         result, cached = await asyncio.to_thread(
@@ -135,20 +167,38 @@ async def predict_parent_endpoint():
         PREDICTION_LATENCY.labels("parent").observe(asyncio.get_event_loop().time() - start)
         return {"status": "completed", "cached": cached, "result": result}
     except PipelineError as e:
-        status_code = 404 if _not_found_for_missing_artifact(e) else 500
-        raise HTTPException(status_code=status_code, detail=str(e)) from e
+        if _not_found_for_missing_artifact(e):
+            from src.pipelines.inference_pipeline import predict_parent
+            from src.pipelines.train_pipeline import train_parent_model
+
+            def chain_predict():
+                get_or_set_cache("predict_parent", predict_parent, 86400)
+
+            response.status_code = 202
+            return await _start_auto_training(
+                task_id="parent_training",
+                train_fn=train_parent_model,
+                chain_fn=chain_predict,
+                detail="parent model missing. training started with auto-prediction",
+            )
+        raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
         logger.exception("Unexpected parent prediction failure")
         raise HTTPException(status_code=500, detail="parent prediction failed") from e
 
 
-@router.post("/predict-child")
-async def predict_child_endpoint(request: TickerRequest):
+@router.post(
+    "/predict-child",
+    response_model=PredictionCompletedResponse | TrainingAcceptedResponse,
+)
+async def predict_child_endpoint(request: TickerRequest, response: Response):
     ticker = request.ticker.strip().upper()
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker is required")
 
     try:
+        from src.pipelines.inference_pipeline import predict_child
+
         cache_key = f"predict_child:{ticker.lower()}"
         PREDICTION_COUNTER.labels("child").inc()
         start = asyncio.get_event_loop().time()
@@ -161,8 +211,78 @@ async def predict_child_endpoint(request: TickerRequest):
         PREDICTION_LATENCY.labels("child").observe(asyncio.get_event_loop().time() - start)
         return {"status": "completed", "cached": cached, "result": result}
     except PipelineError as e:
-        status_code = 404 if _not_found_for_missing_artifact(e) else 500
-        raise HTTPException(status_code=status_code, detail=str(e)) from e
+        if _not_found_for_missing_artifact(e):
+            from src.pipelines.inference_pipeline import predict_child
+            from src.pipelines.train_pipeline import train_child_model
+
+            task_id = ticker.lower()
+            cache_key = f"predict_child:{task_id}"
+
+            def chain_predict():
+                get_or_set_cache(cache_key, lambda: predict_child(ticker), 86400)
+
+            response.status_code = 202
+            return await _start_auto_training_with_args(
+                task_id=task_id,
+                train_fn=train_child_model,
+                train_args=(ticker,),
+                chain_fn=chain_predict,
+                detail=f"child model for {ticker} missing. training started with auto-prediction",
+            )
+        raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
         logger.exception(f"Unexpected child prediction failure for {ticker}")
         raise HTTPException(status_code=500, detail=f"child prediction failed for {ticker}") from e
+
+
+@router.post(
+    "/analyze",
+    response_model=AnalyzeResponse | TrainingAcceptedResponse,
+)
+async def analyze(request: AnalyzeRequest, response: Response):
+    ticker = request.ticker.strip().upper()
+    if not ticker:
+        raise HTTPException(status_code=400, detail="ticker is required")
+
+    prediction_cache_key = f"predict_child:{ticker.lower()}"
+    analyze_cache_key = f"analyze:{ticker.lower()}"
+
+    def build_analysis():
+        from src.agents.langgraph_wrapper import analyze_stock
+
+        return analyze_stock(
+            ticker=ticker,
+            thread_id=request.thread_id,
+            use_fmi=request.use_fmi,
+        )
+
+    try:
+        result, _ = await asyncio.to_thread(
+            get_or_set_cache,
+            analyze_cache_key,
+            build_analysis,
+            86400,
+        )
+        return result
+    except PipelineError as e:
+        if _not_found_for_missing_artifact(e):
+            from src.pipelines.inference_pipeline import predict_child
+            from src.pipelines.train_pipeline import train_child_model
+
+            task_id = ticker.lower()
+
+            def chain_predict():
+                get_or_set_cache(prediction_cache_key, lambda: predict_child(ticker), 86400)
+
+            response.status_code = 202
+            return await _start_auto_training_with_args(
+                task_id=task_id,
+                train_fn=train_child_model,
+                train_args=(ticker,),
+                chain_fn=chain_predict,
+                detail=f"analysis requested for {ticker}. child model missing, training started with auto-prediction",
+            )
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(f"Unexpected analysis failure for {ticker}")
+        raise HTTPException(status_code=500, detail=f"analysis failed for {ticker}") from e
