@@ -8,6 +8,7 @@ from src.agents.agents import perf_analyst, report_generator
 from src.agents.fetch import fetch_pred_data
 from src.exception import PipelineError
 from src.memory.semantic_cache import SemanticCache
+from backend.state import ANALYSIS_CACHE_HIT, ANALYSIS_CACHE_MISS
 from logger.logger import get_logger
 
 try:
@@ -54,6 +55,39 @@ def _get_embedder():
         return None
 
 
+def _llm_model_name() -> str:
+    return os.getenv("OLLAMA_MODEL", "gpt-oss:20b-cloud")
+
+
+def _embed_model_name(embedder) -> str | None:
+    if embedder is None:
+        return None
+    return os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+
+def _news_is_empty(news_sentiment: str) -> bool:
+    normalized = (news_sentiment or "").strip().lower()
+    return not normalized or normalized.startswith("no recent news")
+
+
+def _build_metadata(
+    *,
+    ticker: str,
+    source_cache: str,
+    news_sentiment: str,
+    embedder,
+    llm_model: str | None = None,
+    embed_model: str | None = None,
+) -> dict:
+    return {
+        "source_cache": source_cache,
+        "llm_model": llm_model or _llm_model_name(),
+        "embed_model": embed_model if embed_model is not None else _embed_model_name(embedder),
+        "ticker": ticker,
+        "news_empty": _news_is_empty(news_sentiment),
+    }
+
+
 def analyze_stock(ticker, thread_id=None, use_fmi=False):
     ticker_u = ticker.upper()
     embedder = _get_embedder()
@@ -68,6 +102,7 @@ def analyze_stock(ticker, thread_id=None, use_fmi=False):
             if hits:
                 hits.sort(key=lambda item: int(item.get("created_at_ts", 0)), reverse=True)
                 best = hits[0]
+                ANALYSIS_CACHE_HIT.inc()
                 logger.info("semantic cache hit for %s", ticker_u)
                 return {
                     "status": "completed",
@@ -81,7 +116,16 @@ def analyze_stock(ticker, thread_id=None, use_fmi=False):
                     "thread_id": best.get("thread_id") or thread_id,
                     "use_fmi": bool(best.get("use_fmi", use_fmi)),
                     "cached": True,
+                    "metadata": _build_metadata(
+                        ticker=ticker_u,
+                        source_cache="semantic_cache",
+                        news_sentiment=best.get("news_sentiment", ""),
+                        embedder=embedder,
+                        llm_model=best.get("llm_model") or None,
+                        embed_model=best.get("embed_model") or None,
+                    ),
                 }
+            ANALYSIS_CACHE_MISS.inc()
             logger.info("semantic cache miss for %s", ticker_u)
         except Exception as e:
             logger.exception("semantic cache recall failed for %s: %s", ticker_u, e)
@@ -147,6 +191,12 @@ def analyze_stock(ticker, thread_id=None, use_fmi=False):
         "thread_id": thread_id,
         "use_fmi": use_fmi,
         "cached": False,
+        "metadata": _build_metadata(
+            ticker=ticker_u,
+            source_cache="fresh",
+            news_sentiment=res.get("news_sentiment", ""),
+            embedder=embedder,
+        ),
     }
 
     if embedder is not None and query_vec is not None and final_report:
@@ -166,6 +216,9 @@ def analyze_stock(ticker, thread_id=None, use_fmi=False):
                 news_sentiment=result["news_sentiment"],
                 thread_id=thread_id,
                 use_fmi=use_fmi,
+                llm_model=result["metadata"]["llm_model"],
+                embed_model=result["metadata"].get("embed_model") or "",
+                news_empty=result["metadata"]["news_empty"],
             )
             logger.info("semantic cache save succeeded for %s", ticker_u)
         except Exception as e:

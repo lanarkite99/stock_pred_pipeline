@@ -47,6 +47,15 @@ class RootResponse(BaseModel):
     quick_start: dict[str, dict[str, Any]]
 
 
+class AnalyzeMetadata(BaseModel):
+    source_cache: str
+    llm_model: str
+    embed_model: str | None = None
+    duration_seconds: float | None = None
+    ticker: str
+    news_empty: bool
+
+
 class AnalyzeResponse(BaseModel):
     status: str
     ticker: str
@@ -59,3 +68,4 @@ class AnalyzeResponse(BaseModel):
     thread_id: str | None = None
     use_fmi: bool = False
     cached: bool = False
+    metadata: AnalyzeMetadata | None = None

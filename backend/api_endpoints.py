@@ -13,7 +13,13 @@ from backend.schemas import (
     TickerRequest,
     TrainingAcceptedResponse,
 )
-from backend.state import PREDICTION_COUNTER, PREDICTION_LATENCY
+from backend.state import (
+    ANALYSIS_COUNTER,
+    ANALYSIS_FAILURES,
+    ANALYSIS_LATENCY,
+    PREDICTION_COUNTER,
+    PREDICTION_LATENCY,
+)
 from backend.tasks import get_or_set_cache, get_task_status_redis, run_training
 from logger.logger import get_logger
 from src.config import Config
@@ -245,6 +251,8 @@ async def analyze(request: AnalyzeRequest, response: Response):
         raise HTTPException(status_code=400, detail="ticker is required")
 
     prediction_cache_key = f"predict_child:{ticker.lower()}"
+    ANALYSIS_COUNTER.inc()
+    start = asyncio.get_event_loop().time()
 
     def build_analysis():
         from src.agents.langgraph_wrapper import analyze_stock
@@ -257,6 +265,12 @@ async def analyze(request: AnalyzeRequest, response: Response):
 
     try:
         result = await asyncio.to_thread(build_analysis)
+        duration = asyncio.get_event_loop().time() - start
+        ANALYSIS_LATENCY.observe(duration)
+        if isinstance(result, dict):
+            metadata = result.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["duration_seconds"] = round(duration, 3)
         return result
     except PipelineError as e:
         if _not_found_for_missing_artifact(e):
@@ -276,7 +290,9 @@ async def analyze(request: AnalyzeRequest, response: Response):
                 chain_fn=chain_predict,
                 detail=f"analysis requested for {ticker}. child model missing, training started with auto-prediction",
             )
+        ANALYSIS_FAILURES.inc()
         raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
+        ANALYSIS_FAILURES.inc()
         logger.exception(f"Unexpected analysis failure for {ticker}")
         raise HTTPException(status_code=500, detail=f"analysis failed for {ticker}") from e

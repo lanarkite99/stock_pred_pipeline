@@ -19,3 +19,8 @@ PREDICTION_COUNTER = Counter("prediction_total", "Total predictions", ["type"], 
 PREDICTION_LATENCY = Histogram("prediction_latency_seconds", "Prediction latency", ["type"], registry=registry)
 CACHE_HIT = Counter("redis_cache_hit_total", "Cache hits", ["key"], registry=registry)
 CACHE_MISS = Counter("redis_cache_miss_total", "Cache misses", ["key"], registry=registry)
+ANALYSIS_COUNTER = Counter("analysis_total", "Total analysis requests", registry=registry)
+ANALYSIS_FAILURES = Counter("analysis_failures_total", "Total failed analysis requests", registry=registry)
+ANALYSIS_LATENCY = Histogram("analysis_latency_seconds", "Analysis latency in seconds", registry=registry)
+ANALYSIS_CACHE_HIT = Counter("analysis_cache_hit_total", "Semantic analysis cache hits", registry=registry)
+ANALYSIS_CACHE_MISS = Counter("analysis_cache_miss_total", "Semantic analysis cache misses", registry=registry)

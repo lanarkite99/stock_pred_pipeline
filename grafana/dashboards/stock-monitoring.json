@@ -1,0 +1,231 @@
+{
+  "id": null,
+  "uid": "stock-agent-monitoring",
+  "title": "Stock Agent Monitoring",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "tags": ["mlops", "stocks", "fastapi"],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Redis Up",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "redis_up", "refId": "A" }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Down", "color": "red" }, "1": { "text": "Up", "color": "green" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Redis Keys",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "redis_keys_total", "refId": "A" }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Predictions Served",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "sum(prediction_total)", "refId": "A" }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Cache Hits",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "sum(redis_cache_hit_total)", "refId": "A" }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Cache Misses",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "sum(redis_cache_miss_total)", "refId": "A" }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Requests per Minute",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[1m]))",
+          "legendFormat": "requests/sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Prediction Traffic by Type",
+      "gridPos": { "x": 0, "y": 4, "w": 8, "h": 7 },
+      "targets": [
+        {
+          "expr": "sum by (type) (rate(prediction_total[5m]))",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Prediction Latency p95",
+      "gridPos": { "x": 8, "y": 4, "w": 8, "h": 7 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, type) (rate(prediction_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{type}} p95",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Training Duration",
+      "gridPos": { "x": 16, "y": 4, "w": 8, "h": 7 },
+      "targets": [
+        {
+          "expr": "sum by (task_id) (rate(training_duration_seconds_sum[15m]))",
+          "legendFormat": "{{task_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "System CPU %",
+      "gridPos": { "x": 0, "y": 11, "w": 8, "h": 7 },
+      "targets": [{ "expr": "system_cpu_percent", "legendFormat": "cpu", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 60 },
+              { "color": "red", "value": 85 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "System RAM Used MB",
+      "gridPos": { "x": 8, "y": 11, "w": 8, "h": 7 },
+      "targets": [{ "expr": "system_ram_used_mb", "legendFormat": "ram", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "decmbytes" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "System Disk Used MB",
+      "gridPos": { "x": 16, "y": 11, "w": 8, "h": 7 },
+      "targets": [{ "expr": "system_disk_used_mb", "legendFormat": "disk", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "decmbytes" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Training Status",
+      "gridPos": { "x": 0, "y": 18, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "expr": "training_status",
+          "legendFormat": "{{task_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "idle/failed" },
+                "1": { "text": "running" },
+                "2": { "text": "completed" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache Efficiency",
+      "gridPos": { "x": 12, "y": 18, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "expr": "sum(rate(redis_cache_hit_total[5m]))",
+          "legendFormat": "hits",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(redis_cache_miss_total[5m]))",
+          "legendFormat": "misses",
+          "refId": "B"
+        }
+      ]
+    }
+  ],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  }
+}
