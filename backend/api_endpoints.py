@@ -7,6 +7,7 @@ from backend.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
     HealthResponse,
+    MonitorResponse,
     PredictionCompletedResponse,
     RootResponse,
     TaskStatusResponse,
@@ -24,6 +25,7 @@ from backend.tasks import get_or_set_cache, get_task_status_redis, run_training
 from logger.logger import get_logger
 from src.config import Config
 from src.exception import PipelineError
+from src.utils import save_json
 
 logger = get_logger()
 router = APIRouter()
@@ -36,6 +38,10 @@ def _child_model_path(ticker: str) -> str:
 
 def _parent_model_path() -> str:
     return os.path.join(config.parent_dir, f"{config.parent_ticker}_parent_model.pt")
+
+
+def _latest_analysis_path(ticker: str) -> str:
+    return os.path.join(config.workdir, ticker.lower(), "latest_analysis.json")
 
 
 def _not_found_for_missing_artifact(exc: Exception) -> bool:
@@ -77,6 +83,7 @@ def root():
             "GET /": "Project summary",
             "GET /health": "Health check",
             "GET /status/{task_id}": "Get async training task status",
+            "POST /monitor/{ticker}": "Run monitoring checks for a ticker",
             "POST /train-parent": "Train parent market model",
             "POST /train-child": "Train child model for a ticker",
             "POST /predict-parent": "Predict using parent model",
@@ -89,6 +96,7 @@ def root():
             "predict_parent": {"method": "POST", "path": "/predict-parent"},
             "predict_child": {"method": "POST", "path": "/predict-child", "body": {"ticker": "RELIANCE.NS"}},
             "analyze": {"method": "POST", "path": "/analyze", "body": {"ticker": "RELIANCE.NS"}},
+            "monitor": {"method": "POST", "path": "/monitor/RELIANCE.NS"},
         },
     }
 
@@ -104,6 +112,21 @@ def get_task_status(task_id: str):
     if not status:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     return {"task_id": task_id, **status}
+
+
+@router.post("/monitor/{ticker}", response_model=MonitorResponse)
+async def monitor_ticker(ticker: str):
+    ticker_u = ticker.strip().upper()
+    if not ticker_u:
+        raise HTTPException(status_code=400, detail="ticker is required")
+
+    try:
+        from monitoring.run_monitoring import run_monitoring
+
+        return await asyncio.to_thread(run_monitoring, ticker_u)
+    except Exception as e:
+        logger.exception("Monitoring failed for %s", ticker_u)
+        raise HTTPException(status_code=500, detail=f"monitoring failed for {ticker_u}") from e
 
 
 @router.post("/train-parent", response_model=TrainingAcceptedResponse)
@@ -271,6 +294,7 @@ async def analyze(request: AnalyzeRequest, response: Response):
             metadata = result.setdefault("metadata", {})
             if isinstance(metadata, dict):
                 metadata["duration_seconds"] = round(duration, 3)
+            save_json(result, _latest_analysis_path(ticker))
         return result
     except PipelineError as e:
         if _not_found_for_missing_artifact(e):

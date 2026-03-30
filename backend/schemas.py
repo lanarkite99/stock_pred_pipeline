@@ -69,3 +69,14 @@ class AnalyzeResponse(BaseModel):
     use_fmi: bool = False
     cached: bool = False
     metadata: AnalyzeMetadata | None = None
+
+
+class MonitorResponse(BaseModel):
+    ticker: str
+    status: str
+    timestamp: str
+    summary: dict[str, str]
+    system: dict[str, Any]
+    regime: dict[str, Any]
+    analysis_quality: dict[str, Any]
+    artifacts: dict[str, str]
