@@ -10,6 +10,8 @@ load_dotenv()
 
 FINNHUB_API_KEY = os.getenv("FMI_API_KEY")
 FINNHUB_URL = "https://finnhub.io/api/v1/company-news"
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY") or os.getenv("NEWS_API_KEY") or os.getenv("NEWSAPI_API_KEY")
+NEWSAPI_URL = "https://newsapi.org/v2/everything"
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 try:
@@ -101,7 +103,71 @@ def _format_news_items(ticker: str, items: list[dict]) -> str:
     return "\n".join(res)
 
 
+def _is_indian_ticker(ticker: str) -> bool:
+    return ticker.upper().endswith(".NS")
+
+
+def _news_search_terms(ticker: str) -> list[str]:
+    terms: list[str] = []
+    base = ticker.split(".")[0].strip().upper()
+
+    if _is_indian_ticker(ticker) and yf is not None:
+        try:
+            info = yf.Ticker(ticker).info or {}
+            long_name = info.get("longName") or info.get("shortName")
+            if long_name:
+                terms.append(str(long_name))
+        except Exception:
+            pass
+
+    if base:
+        terms.append(base)
+
+    deduped: list[str] = []
+    seen = set()
+    for term in terms:
+        normalized = term.strip()
+        if normalized and normalized.lower() not in seen:
+            deduped.append(normalized)
+            seen.add(normalized.lower())
+    return deduped
+
+
+def _newsapi_search(ticker: str) -> str:
+    if not NEWSAPI_KEY:
+        return ""
+
+    for term in _news_search_terms(ticker):
+        try:
+            response = requests.get(
+                NEWSAPI_URL,
+                params={
+                    "q": term,
+                    "language": "en",
+                    "sortBy": "publishedAt",
+                    "pageSize": 4,
+                    "apiKey": NEWSAPI_KEY,
+                },
+                timeout=30,
+            )
+            if response.status_code != 200:
+                continue
+            payload = response.json()
+            articles = payload.get("articles", [])
+            formatted = _format_news_items(ticker, articles)
+            if formatted and not formatted.startswith("No recent news with usable details"):
+                return f"{formatted}\nSearch term: {term}"
+        except Exception:
+            continue
+    return ""
+
+
 def get_stock_news(ticker):
+    if _is_indian_ticker(ticker):
+        newsapi_result = _newsapi_search(ticker)
+        if newsapi_result:
+            return f"{newsapi_result}\nSource: NewsAPI"
+
     try:
         end = datetime.utcnow().date()
         start = end - timedelta(days=7)
@@ -131,6 +197,11 @@ def get_stock_news(ticker):
 
         raise Exception("No output from Finnhub")
     except Exception:
+        if _is_indian_ticker(ticker):
+            newsapi_result = _newsapi_search(ticker)
+            if newsapi_result:
+                return f"{newsapi_result}\nSource: NewsAPI"
+
         if yf is not None:
             try:
                 news = yf.Ticker(ticker).news or []

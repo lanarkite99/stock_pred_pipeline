@@ -70,6 +70,12 @@ def _news_is_empty(news_sentiment: str) -> bool:
     return not normalized or normalized.startswith("no recent news")
 
 
+def _should_refresh_cached_result(ticker: str, cached_row: dict) -> bool:
+    news_sentiment = cached_row.get("news_sentiment", "")
+    cached_news_empty = str(cached_row.get("news_empty", "")).lower() == "true" or _news_is_empty(news_sentiment)
+    return ticker.upper().endswith(".NS") and cached_news_empty
+
+
 def _build_metadata(
     *,
     ticker: str,
@@ -102,29 +108,33 @@ def analyze_stock(ticker, thread_id=None, use_fmi=False):
             if hits:
                 hits.sort(key=lambda item: int(item.get("created_at_ts", 0)), reverse=True)
                 best = hits[0]
-                ANALYSIS_CACHE_HIT.inc()
-                logger.info("semantic cache hit for %s", ticker_u)
-                return {
-                    "status": "completed",
-                    "ticker": ticker_u,
-                    "recommendation": best.get("recommendation", "NEUTRAL"),
-                    "confidence": best.get("confidence", "Medium"),
-                    "summary": best.get("summary", ""),
-                    "final_report": best.get("final_report", best.get("summary", "")),
-                    "news_sentiment": best.get("news_sentiment", ""),
-                    "prediction": __import__("json").loads(best.get("prediction_json", "{}")),
-                    "thread_id": best.get("thread_id") or thread_id,
-                    "use_fmi": bool(best.get("use_fmi", use_fmi)),
-                    "cached": True,
-                    "metadata": _build_metadata(
-                        ticker=ticker_u,
-                        source_cache="semantic_cache",
-                        news_sentiment=best.get("news_sentiment", ""),
-                        embedder=embedder,
-                        llm_model=best.get("llm_model") or None,
-                        embed_model=best.get("embed_model") or None,
-                    ),
-                }
+                if _should_refresh_cached_result(ticker_u, best):
+                    ANALYSIS_CACHE_MISS.inc()
+                    logger.info("semantic cache stale for %s due to empty news; rebuilding analysis", ticker_u)
+                else:
+                    ANALYSIS_CACHE_HIT.inc()
+                    logger.info("semantic cache hit for %s", ticker_u)
+                    return {
+                        "status": "completed",
+                        "ticker": ticker_u,
+                        "recommendation": best.get("recommendation", "NEUTRAL"),
+                        "confidence": best.get("confidence", "Medium"),
+                        "summary": best.get("summary", ""),
+                        "final_report": best.get("final_report", best.get("summary", "")),
+                        "news_sentiment": best.get("news_sentiment", ""),
+                        "prediction": __import__("json").loads(best.get("prediction_json", "{}")),
+                        "thread_id": best.get("thread_id") or thread_id,
+                        "use_fmi": bool(best.get("use_fmi", use_fmi)),
+                        "cached": True,
+                        "metadata": _build_metadata(
+                            ticker=ticker_u,
+                            source_cache="semantic_cache",
+                            news_sentiment=best.get("news_sentiment", ""),
+                            embedder=embedder,
+                            llm_model=best.get("llm_model") or None,
+                            embed_model=best.get("embed_model") or None,
+                        ),
+                    }
             ANALYSIS_CACHE_MISS.inc()
             logger.info("semantic cache miss for %s", ticker_u)
         except Exception as e:
