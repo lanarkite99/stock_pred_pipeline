@@ -73,7 +73,7 @@ def assess_regime(ticker: str) -> dict[str, Any]:
         status = "warning"
 
     if not notes:
-        notes.append("Recent market behavior remains broadly aligned with the reference window.")
+        notes.append("Recent market behavior remains broadly aligned with the ref window.")
 
     return {
         "status": status,

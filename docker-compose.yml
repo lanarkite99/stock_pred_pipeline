@@ -17,6 +17,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:20b-cloud}
+      USER_AGENT: ${USER_AGENT:-stock-pred-end2end-agentic/1.0}
       FMI_API_KEY: ${FMI_API_KEY:-}
       NEWSAPI_KEY: ${NEWSAPI_KEY:-}
       DAGSHUB_USER_NAME: ${DAGSHUB_USER_NAME:-}
@@ -77,6 +78,23 @@ services:
     networks:
       - app_network
 
+  streamlit_app:
+    build:
+      context: .
+      dockerfile: streamlit_app/Dockerfile
+    container_name: streamlit_app
+    ports:
+      - "8502:8502"
+    depends_on:
+      - fastapi
+    environment:
+      API_URL: http://fastapi:8000
+      OUTPUTS_DIR: /app/outputs
+    volumes:
+      - ./outputs:/app/outputs
+    networks:
+      - app_network
+
   # frontend:
   #   build:
   #     context: ./frontend
@@ -108,3 +126,4 @@ services:
 volumes:
   redis_data:
   grafana_data:
+
