@@ -48,7 +48,7 @@ flowchart TD
     F --> PR[Prediction Endpoints]
     F --> AN[Analysis Endpoint]
     F --> MO[Monitor Endpoint]
-    F --> MT[/metrics]
+    F --> MT[metrics endpoint]
 
     TR --> ML[Training Pipeline]
     PR --> IF[Inference Pipeline]
@@ -277,9 +277,9 @@ Project-specific docs available in `ref_docs/`:
 ## Current Design Notes
 
 - FastAPI currently runs with a single worker so in-process Prometheus metrics remain consistent.
-- Redis is used for prediction exact-cache and asynchronous training task state.
+- Redis is used for prediction exact cache and asynchronous training task state.
 - Chroma is used for semantic caching of analysis outputs.
-- Monitoring is custom domain logic, not Evidently-based reporting.
+- Monitoring is custom domain logic, not Evidently-based reporting yet.
 - The current analysis graph is simpler than some conceptual multi-agent diagrams; this README describes the implemented system, not the aspirational one.
 
 ## Limitations
