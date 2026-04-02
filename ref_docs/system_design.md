@@ -75,7 +75,7 @@ flowchart TD
         F --> PR[Prediction Endpoints]
         F --> AN[Analysis Endpoint]
         F --> MO[Monitoring Endpoint]
-        F --> MT[/metrics]
+        F --> MT[metrics endpoint]
     end
 
     subgraph ML Layer
@@ -661,7 +661,7 @@ flowchart LR
     A2 --> C
 
     T[Training Request] --> TS[Redis Task State]
-    TS --> ST[GET /status/{task_id}]
+    TS --> ST[status endpoint]
 ```
 
 ---
@@ -970,4 +970,5 @@ For someone trying to understand the implementation, a practical order is:
 11. `src/memory/semantic_cache.py`
 12. `monitoring/...`
 13. `streamlit_app/app.py`
+
 
