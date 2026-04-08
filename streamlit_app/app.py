@@ -1,6 +1,5 @@
 import json
 import os
-from pathlib import Path
 from typing import Any
 
 import altair as alt
@@ -9,7 +8,6 @@ import requests
 import streamlit as st
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000").rstrip("/")
-OUTPUTS_DIR = Path(os.getenv("OUTPUTS_DIR", "outputs"))
 
 st.set_page_config(page_title="Stock Pred App", page_icon="ST", layout="wide")
 
@@ -83,16 +81,6 @@ def _get(path: str):
 
 
 
-def _read_json(path: Path):
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-
-
-
 def _task_status(ticker):
     try:
         return _get(f"/status/{ticker.lower()}")
@@ -103,18 +91,13 @@ def _task_status(ticker):
 
 
 
-def _ticker_dir(ticker):
-    return OUTPUTS_DIR / ticker.lower()
-
-
-
-def _analysis_path(ticker):
-    return _ticker_dir(ticker) / "latest_analysis.json"
-
-
-
-def _monitor_path(ticker):
-    return _ticker_dir(ticker) / "monitor" / "latest_monitor.json"
+def _saved_output(ticker: str, kind: str):
+    try:
+        return _get(f"/artifacts/{ticker}/{kind}")
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return None
+        raise
 
 
 
@@ -244,7 +227,7 @@ with api_col:
     except Exception as exc:
         backend_online = False
         health = {"status": "offline"}
-        st.warning(f"Backend offline. Saved outputs are still available.\n\n{exc}")
+        st.warning(f"Backend offline. Saved outputs are unavailable.\n\n{exc}")
 
     task_status = None
     if backend_online:
@@ -305,8 +288,17 @@ with api_col:
 with file_col:
     st.markdown('<div class="panel-title">Saved Outputs</div>', unsafe_allow_html=True)
 
-    analysis_data = _read_json(_analysis_path(ticker))
-    monitor_data = _read_json(_monitor_path(ticker))
+    analysis_data = None
+    monitor_data = None
+    if backend_online:
+        try:
+            analysis_data = _saved_output(ticker, "analysis")
+        except Exception as exc:
+            st.warning(f"Could not load saved analysis: {exc}")
+        try:
+            monitor_data = _saved_output(ticker, "monitor")
+        except Exception as exc:
+            st.warning(f"Could not load saved monitor: {exc}")
 
     summary_a, summary_b, summary_c, summary_d = st.columns(4)
     with summary_a:
@@ -342,7 +334,7 @@ with file_col:
         with st.expander("Analysis JSON"):
             st.json(analysis_data)
     else:
-        st.info("Run Analyze to create latest_analysis.json.")
+        st.info("Run Analyze to create a saved analysis artifact.")
 
     if monitor_data:
         st.markdown("**Monitor Summary**")
@@ -374,4 +366,4 @@ with file_col:
         with st.expander("Monitor JSON"):
             st.json(monitor_data)
     else:
-        st.info("Run Monitor to create latest_monitor.json.")
+        st.info("Run Monitor to create a saved monitor artifact.")

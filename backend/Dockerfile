@@ -21,9 +21,9 @@ RUN pip install --upgrade pip setuptools wheel && \
 COPY backend ./backend
 COPY src ./src
 COPY logger ./logger
+COPY monitoring ./monitoring
 COPY feature_store ./feature_store
 COPY main.py ./
-COPY system_design.md ./
 
 EXPOSE 8000
 

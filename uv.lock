@@ -4639,6 +4639,7 @@ name = "stock-pred-end2end-agentic"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "boto3" },
     { name = "chromadb" },
     { name = "dagshub" },
     { name = "fastapi" },
@@ -4667,6 +4668,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", specifier = ">=1.40.0" },
     { name = "chromadb", specifier = ">=1.0.15" },
     { name = "dagshub", specifier = ">=0.6.3" },
     { name = "fastapi", specifier = ">=0.115.0" },

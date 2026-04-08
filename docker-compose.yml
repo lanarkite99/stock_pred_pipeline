@@ -14,9 +14,12 @@ services:
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: "${REDIS_PORT:-6379}"
       REDIS_DB: "${REDIS_DB:-0}"
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:20b-cloud}
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      BEDROCK_CHAT_MODEL_ID: ${BEDROCK_CHAT_MODEL_ID:-openai.gpt-oss-20b-1:0}
+      BEDROCK_EMBED_MODEL_ID: ${BEDROCK_EMBED_MODEL_ID:-amazon.titan-embed-text-v1}
       USER_AGENT: ${USER_AGENT:-stock-pred-end2end-agentic/1.0}
       FMI_API_KEY: ${FMI_API_KEY:-}
       NEWSAPI_KEY: ${NEWSAPI_KEY:-}
@@ -126,4 +129,3 @@ services:
 volumes:
   redis_data:
   grafana_data:
-

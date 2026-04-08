@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "boto3>=1.40.0",
     "dagshub>=0.6.3",
     "feast[redis]>=0.60.0",
     "fastapi>=0.115.0",
@@ -30,3 +31,5 @@ dependencies = [
     "yfinance>=1.2.0",
     "streamlit>=1.55.0",
 ]
+
+

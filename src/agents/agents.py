@@ -1,7 +1,8 @@
 import os
 import re
 
-from langchain_core.messages import AIMessage, SystemMessage
+import boto3
+from langchain_core.messages import AIMessage
 
 from logger.logger import get_logger
 from src.agents.fetch import get_stock_news, fetch_list
@@ -13,19 +14,54 @@ llm = None
 llm_init_error = None
 
 
+class BedrockLLM:
+    def __init__(self):
+        self.model_id = os.getenv("BEDROCK_CHAT_MODEL_ID", "openai.gpt-oss-20b-1:0")
+        self.temperature = float(os.getenv("BEDROCK_TEMPERATURE", "0.1"))
+        self.client = boto3.client(
+            "bedrock-runtime",
+            region_name=os.getenv("AWS_REGION", "ap-south-1"),
+        )
+
+    def bind_tools(self, _tools):
+        return self
+
+    def invoke(self, messages):
+        prompt_parts = []
+        for message in messages:
+            content = getattr(message, "content", message)
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        prompt_parts.append(str(item.get("text", "")))
+                    else:
+                        prompt_parts.append(str(item))
+            else:
+                prompt_parts.append(str(content))
+
+        prompt = "\n\n".join(part.strip() for part in prompt_parts if str(part).strip())
+        response = self.client.converse(
+            modelId=self.model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": prompt}],
+                }
+            ],
+            inferenceConfig={"temperature": self.temperature},
+        )
+        content_blocks = response.get("output", {}).get("message", {}).get("content", [])
+        text = "".join(block.get("text", "") for block in content_blocks if isinstance(block, dict)).strip()
+        return AIMessage(content=text)
+
+
 def _get_llm():
     global llm, llm_init_error
     if llm is not None:
         return llm
 
     try:
-        from langchain_ollama import ChatOllama
-
-        llm = ChatOllama(
-            model=os.getenv("OLLAMA_MODEL", "gpt-oss:20b-cloud"),
-            temperature=0.1,
-            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-        ).bind_tools(fetch_list)
+        llm = BedrockLLM().bind_tools(fetch_list)
         return llm
     except Exception as e:
         llm_init_error = e
@@ -34,7 +70,7 @@ def _get_llm():
 
 
 def _invoke_llm(prompt: str) -> str:
-    response = _get_llm().invoke([SystemMessage(content=prompt)])
+    response = _get_llm().invoke([prompt])
     return response.content if hasattr(response, "content") else str(response)
 
 

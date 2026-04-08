@@ -12,11 +12,23 @@ class SemanticCache:
     def __init__(self, db_path: str = "outputs/vector_db", collection_name: str = "analysis_cache"):
         self.db_path = db_path
         self.collection_name = collection_name
-        os.makedirs(self.db_path, exist_ok=True)
-        self.client = chromadb.PersistentClient(
-            path=self.db_path,
-            settings=Settings(anonymized_telemetry=False),
-        )
+
+        chroma_host = os.getenv("CHROMA_HOST", "").strip()
+        chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
+
+        if chroma_host:
+            self.client = chromadb.HttpClient(
+                host=chroma_host,
+                port=chroma_port,
+                settings=Settings(anonymized_telemetry=False),
+            )
+        else:
+            os.makedirs(self.db_path, exist_ok=True)
+            self.client = chromadb.PersistentClient(
+                path=self.db_path,
+                settings=Settings(anonymized_telemetry=False),
+            )
+
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"},

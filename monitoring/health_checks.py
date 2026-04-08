@@ -1,7 +1,7 @@
 import os
 from typing import Any
 
-import requests
+import boto3
 import redis
 
 from logger.logger import get_logger
@@ -26,11 +26,16 @@ def _redis_up() -> bool:
     return _redis_client() is not None
 
 
-def _ollama_reachable() -> bool:
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+def _bedrock_reachable() -> bool:
     try:
-        response = requests.get(f"{base_url}/api/tags", timeout=10)
-        return response.status_code == 200
+        client = boto3.client(
+            "bedrock",
+            region_name=os.getenv("AWS_REGION", "ap-south-1"),
+        )
+        client.get_foundation_model(
+            modelIdentifier=os.getenv("BEDROCK_CHAT_MODEL_ID", "openai.gpt-oss-20b-1:0")
+        )
+        return True
     except Exception:
         return False
 
@@ -64,7 +69,7 @@ def check_system_health(ticker: str) -> dict[str, Any]:
     result = {
         "api_healthy": True,
         "redis_up": _redis_up(),
-        "ollama_reachable": _ollama_reachable(),
+        "bedrock_reachable": _bedrock_reachable(),
         "prediction_cache_available": _prediction_cache_available(ticker),
         "semantic_cache_available": _semantic_cache_available(),
     }

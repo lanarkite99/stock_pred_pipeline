@@ -48,6 +48,57 @@ def _next_trading_days(last_date: pd.Timestamp, periods: int) -> pd.DatetimeInde
     return pd.date_range(last_date + nse_business_day, periods=periods, freq=nse_business_day)
 
 
+def _normalize_forecast_row(row: dict) -> tuple[dict, list[str]]:
+    normalized = dict(row)
+    warnings: list[str] = []
+
+    open_price = float(normalized["open"])
+    high_price = float(normalized["high"])
+    low_price = float(normalized["low"])
+    close_price = float(normalized["close"])
+    volume = max(0.0, float(normalized["volume"]))
+
+    if high_price < low_price:
+        high_price, low_price = low_price, high_price
+        warnings.append("high_below_low_swapped")
+
+    max_price = max(open_price, high_price, low_price, close_price)
+    min_price = min(open_price, high_price, low_price, close_price)
+
+    if high_price < max_price:
+        high_price = max_price
+        warnings.append("high_adjusted")
+
+    if low_price > min_price:
+        low_price = min_price
+        warnings.append("low_adjusted")
+
+    if open_price < low_price:
+        open_price = low_price
+        warnings.append("open_clamped")
+    elif open_price > high_price:
+        open_price = high_price
+        warnings.append("open_clamped")
+
+    if close_price < low_price:
+        close_price = low_price
+        warnings.append("close_clamped")
+    elif close_price > high_price:
+        close_price = high_price
+        warnings.append("close_clamped")
+
+    normalized.update(
+        {
+            "open": float(open_price),
+            "high": float(high_price),
+            "low": float(low_price),
+            "close": float(close_price),
+            "volume": float(volume),
+        }
+    )
+    return normalized, warnings
+
+
 def predict_one_step_and_week(model, df: pd.DataFrame, scaler: StandardScaler, ticker: str) -> Dict:
     try:
         config = Config()
@@ -67,16 +118,33 @@ def predict_one_step_and_week(model, df: pd.DataFrame, scaler: StandardScaler, t
         next_days = _next_trading_days(last_date, config.pred_len)
 
         forecast = []
+        sanity_adjustments = []
         for i, date in enumerate(next_days):
-            forecast.append(
-                {
-                    "date": str(date.date()),
-                    "open": float(preds_inv[i][0]),
-                    "high": float(preds_inv[i][1]),
-                    "low": float(preds_inv[i][2]),
-                    "close": float(preds_inv[i][3]),
-                    "volume": float(preds_inv[i][4]),
-                }
+            raw_row = {
+                "date": str(date.date()),
+                "open": float(preds_inv[i][0]),
+                "high": float(preds_inv[i][1]),
+                "low": float(preds_inv[i][2]),
+                "close": float(preds_inv[i][3]),
+                "volume": float(preds_inv[i][4]),
+            }
+            normalized_row, warnings = _normalize_forecast_row(raw_row)
+            if warnings:
+                sanity_adjustments.append(
+                    {
+                        "date": normalized_row["date"],
+                        "warnings": warnings,
+                        "raw": raw_row,
+                        "normalized": normalized_row,
+                    }
+                )
+            forecast.append(normalized_row)
+
+        if sanity_adjustments:
+            logger.warning(
+                "Applied forecast sanity checks for %s: %s",
+                ticker,
+                ", ".join(item["date"] for item in sanity_adjustments),
             )
 
         return {
@@ -91,8 +159,13 @@ def predict_one_step_and_week(model, df: pd.DataFrame, scaler: StandardScaler, t
                     "low": float(min(item["low"] for item in forecast)),
                 },
                 "full_forecast": forecast,
+                "sanity_checks": {
+                    "adjusted_rows": len(sanity_adjustments),
+                    "adjustments": sanity_adjustments,
+                },
             },
         }
     except Exception as e:
         logger.error(f"Prediction failed for {ticker}: {e}")
         raise PipelineError(f"Prediction failed for {ticker}: {e}") from e
+

@@ -313,3 +313,5 @@ lets connect!
 <a href="https://lanarkite99.substack.com/" target="_blank">
     <img src="https://img.shields.io/badge/Substack-FF6719?style=for-the-badge&logo=substack&logoColor=white" alt="Substack"/>
 </a>
+
+http://a411601cafa994a2d9b51b3c9c755652-26240035.ap-south-1.elb.amazonaws.com:8502/

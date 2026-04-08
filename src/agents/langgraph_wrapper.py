@@ -1,5 +1,7 @@
+import json
 import os
 
+import boto3
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
@@ -10,11 +12,6 @@ from src.exception import PipelineError
 from src.memory.semantic_cache import SemanticCache
 from backend.state import ANALYSIS_CACHE_HIT, ANALYSIS_CACHE_MISS
 from logger.logger import get_logger
-
-try:
-    from langchain_ollama import OllamaEmbeddings
-except ImportError:
-    OllamaEmbeddings = None
 
 logger = get_logger()
 
@@ -41,28 +38,41 @@ def build_graph():
     return g.compile(checkpointer=MemorySaver())
 
 
-def _get_embedder():
-    if OllamaEmbeddings is None:
-        logger.info("semantic cache disabled: langchain_ollama embeddings unavailable")
-        return None
-    try:
-        return OllamaEmbeddings(
-            model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
-            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+class BedrockEmbedder:
+    def __init__(self):
+        self.model_id = os.getenv("BEDROCK_EMBED_MODEL_ID", "amazon.titan-embed-text-v1")
+        self.client = boto3.client(
+            "bedrock-runtime",
+            region_name=os.getenv("AWS_REGION", "ap-south-1"),
         )
+
+    def embed_query(self, text: str) -> list[float]:
+        response = self.client.invoke_model(
+            modelId=self.model_id,
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps({"inputText": text}),
+        )
+        payload = json.loads(response["body"].read())
+        return payload.get("embedding", [])
+
+
+def _get_embedder():
+    try:
+        return BedrockEmbedder()
     except Exception as e:
         logger.warning("semantic cache embedder init failed: %s", e)
         return None
 
 
 def _llm_model_name() -> str:
-    return os.getenv("OLLAMA_MODEL", "gpt-oss:20b-cloud")
+    return os.getenv("BEDROCK_CHAT_MODEL_ID", "openai.gpt-oss-20b-1:0")
 
 
 def _embed_model_name(embedder) -> str | None:
     if embedder is None:
         return None
-    return os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+    return getattr(embedder, "model_id", os.getenv("BEDROCK_EMBED_MODEL_ID", "amazon.titan-embed-text-v1"))
 
 
 def _news_is_empty(news_sentiment: str) -> bool:

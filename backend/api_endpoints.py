@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 from fastapi import APIRouter, HTTPException, Response
@@ -44,6 +45,21 @@ def _latest_analysis_path(ticker: str) -> str:
     return os.path.join(config.workdir, ticker.lower(), "latest_analysis.json")
 
 
+def _latest_monitor_path(ticker: str) -> str:
+    return os.path.join(config.workdir, ticker.lower(), "monitor", "latest_monitor.json")
+
+
+def _load_saved_json(path: str):
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as e:
+        logger.warning("Failed to load saved json %s: %s", path, e)
+        return None
+
+
 def _not_found_for_missing_artifact(exc: Exception) -> bool:
     message = str(exc).lower()
     return "missing pytorch model" in message or "missing scaler" in message or "not found" in message
@@ -83,6 +99,8 @@ def root():
             "GET /": "Project summary",
             "GET /health": "Health check",
             "GET /status/{task_id}": "Get async training task status",
+            "GET /artifacts/{ticker}/analysis": "Get latest saved analysis output",
+            "GET /artifacts/{ticker}/monitor": "Get latest saved monitor output",
             "POST /monitor/{ticker}": "Run monitoring checks for a ticker",
             "POST /train-parent": "Train parent market model",
             "POST /train-child": "Train child model for a ticker",
@@ -112,6 +130,30 @@ def get_task_status(task_id: str):
     if not status:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     return {"task_id": task_id, **status}
+
+
+@router.get("/artifacts/{ticker}/analysis")
+def get_latest_analysis(ticker: str):
+    ticker_u = ticker.strip().upper()
+    if not ticker_u:
+        raise HTTPException(status_code=400, detail="ticker is required")
+
+    data = _load_saved_json(_latest_analysis_path(ticker_u))
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"latest analysis not found for {ticker_u}")
+    return data
+
+
+@router.get("/artifacts/{ticker}/monitor")
+def get_latest_monitor(ticker: str):
+    ticker_u = ticker.strip().upper()
+    if not ticker_u:
+        raise HTTPException(status_code=400, detail="ticker is required")
+
+    data = _load_saved_json(_latest_monitor_path(ticker_u))
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"latest monitor not found for {ticker_u}")
+    return data
 
 
 @router.post("/monitor/{ticker}", response_model=MonitorResponse)
