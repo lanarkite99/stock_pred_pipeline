@@ -1,0 +1,3 @@
+project: stock_prediction
+provider: local
+registry: data/registry.db
