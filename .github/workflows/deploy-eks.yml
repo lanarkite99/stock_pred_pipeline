@@ -1,0 +1,62 @@
+name: deploy-eks
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_GITHUB_ROLE_ARN }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Create Kubernetes secret
+        run: |
+          cat > k8s/secrets.generated.yaml <<'EOF'
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: stock-pred-secrets
+            namespace: stock-pred
+          type: Opaque
+          stringData:
+            AWS_REGION: "${{ secrets.AWS_REGION }}"
+            BEDROCK_CHAT_MODEL_ID: "${{ secrets.BEDROCK_CHAT_MODEL_ID }}"
+            BEDROCK_EMBED_MODEL_ID: "${{ secrets.BEDROCK_EMBED_MODEL_ID }}"
+            NEWSAPI_KEY: "${{ secrets.NEWSAPI_KEY }}"
+            FMI_API_KEY: "${{ secrets.FMI_API_KEY }}"
+            DAGSHUB_USER_NAME: "${{ secrets.DAGSHUB_USER_NAME }}"
+            DAGSHUB_REPO_NAME: "${{ secrets.DAGSHUB_REPO_NAME }}"
+            DAGSHUB_TOKEN: "${{ secrets.DAGSHUB_TOKEN }}"
+            MLFLOW_TRACKING_URI: "${{ secrets.MLFLOW_TRACKING_URI }}"
+            GF_SECURITY_ADMIN_USER: "${{ secrets.GF_SECURITY_ADMIN_USER }}"
+            GF_SECURITY_ADMIN_PASSWORD: "${{ secrets.GF_SECURITY_ADMIN_PASSWORD }}"
+          EOF
+          kubectl apply -f k8s/secrets.generated.yaml
+          rm -f k8s/secrets.generated.yaml
+
+      - name: Apply manifests
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/volumes.yaml
+          kubectl apply -f k8s/redis.yaml
+          kubectl apply -f k8s/chroma.yaml
+          kubectl apply -f k8s/prometheus.yaml
+          kubectl apply -f k8s/grafana.yaml
+          kubectl apply -f k8s/fastapi.yaml
+          kubectl apply -f k8s/frontend.yaml
