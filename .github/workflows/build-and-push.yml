@@ -27,7 +27,7 @@ jobs:
 
       - name: Build and push FastAPI image
         run: |
-          docker build -t ${{ secrets.ECR_FASTAPI_REPO }}:latest .
+          docker build -t ${{ secrets.ECR_FASTAPI_REPO }}:latest -f backend/Dockerfile .
           docker push ${{ secrets.ECR_FASTAPI_REPO }}:latest
 
       - name: Build and push Streamlit image
