@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: stock-pred
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: 975050143983.dkr.ecr.ap-south-1.amazonaws.com/stock-pred-streamlit:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8502
+        env:
+        - name: API_URL
+          value: http://fastapi:8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "300m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: stock-pred
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8502
+    targetPort: 8502
+  selector:
+    app: frontend
+

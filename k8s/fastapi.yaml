@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fastapi
+  namespace: stock-pred
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fastapi
+  template:
+    metadata:
+      labels:
+        app: fastapi
+    spec:
+      containers:
+      - name: fastapi
+        image: 975050143983.dkr.ecr.ap-south-1.amazonaws.com/stock-pred-fastapi:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: REDIS_HOST
+          value: redis
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"
+        - name: CHROMA_HOST
+          value: chroma
+        - name: CHROMA_PORT
+          value: "8000"
+        - name: APP_ENV
+          value: aws
+        - name: ARTIFACT_DIR
+          value: /app/outputs
+        envFrom:
+        - secretRef:
+            name: stock-pred-secrets
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "1"
+            memory: "2Gi"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 20
+        volumeMounts:
+        - name: outputs-volume
+          mountPath: /app/outputs
+      volumes:
+      - name: outputs-volume
+        persistentVolumeClaim:
+          claimName: outputs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fastapi
+  namespace: stock-pred
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+  selector:
+    app: fastapi
+
+

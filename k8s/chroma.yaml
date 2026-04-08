@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chroma
+  namespace: stock-pred
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chroma
+  template:
+    metadata:
+      labels:
+        app: chroma
+    spec:
+      enableServiceLinks: false
+      containers:
+      - name: chroma
+        image: chromadb/chroma:latest
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "300m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: chroma-storage
+          mountPath: /data
+      volumes:
+      - name: chroma-storage
+        persistentVolumeClaim:
+          claimName: chroma-storage-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chroma
+  namespace: stock-pred
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+  selector:
+    app: chroma

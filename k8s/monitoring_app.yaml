@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring-app
+  namespace: stock-pred
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: monitoring-app
+  template:
+    metadata:
+      labels:
+        app: monitoring-app
+    spec:
+      containers:
+      - name: monitoring-app
+        image: <account-id>.dkr.ecr.<region>.amazonaws.com/stock-pred-monitoring:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8503
+        env:
+        - name: API_URL
+          value: http://fastapi:8000
+        - name: OUTPUTS_DIR
+          value: /app/outputs
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "300m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: outputs-volume
+          mountPath: /app/outputs
+      volumes:
+      - name: outputs-volume
+        persistentVolumeClaim:
+          claimName: outputs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monitoring-app
+  namespace: stock-pred
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8503
+    targetPort: 8503
+  selector:
+    app: monitoring-app
+
+
