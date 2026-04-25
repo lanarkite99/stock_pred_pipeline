@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-`Stock Pred Pipeline` is an end-to-end stock prediction and analysis system built around a FastAPI backend, PyTorch-based parent/child models, Ollama-backed agentic analysis, Redis exact-cache, Chroma semantic cache, custom monitoring, and a Streamlit dashboard.
+`Stock Pred Pipeline` is an end-to-end stock prediction and analysis system built around a FastAPI backend, PyTorch parent/child LSTM models, Bedrock-backed agentic analysis, Redis exact cache, Chroma semantic cache, custom monitoring, Prometheus/Grafana observability, Feast-backed feature access, and a Streamlit dashboard.
 
 The repository currently supports:
 
@@ -13,9 +13,9 @@ The repository currently supports:
 - per-ticker monitoring with saved JSON artifacts
 - system observability through Prometheus and Grafana
 - optional DagsHub-backed MLflow tracking
-- a lightweight Streamlit UI for train / predict / analyze / monitor flows
+- local Docker Compose workflows and AWS/EKS deployment assets
 
-This document describes the **implemented** design in this repository. It does not assume cloud deployment, Kubernetes, Evidently-based reports, or unimplemented search/discovery features which is the next phase.
+This document describes the implemented design in this repository. It does not assume extra components that are not present in code.
 
 ---
 
@@ -23,10 +23,10 @@ This document describes the **implemented** design in this repository. It does n
 
 ### 2.1 Functional goals
 
-The current system is designed to:
+The system is designed to:
 
 - train a reusable parent market model
-- fine-tune child models for specific tickers
+- adapt child models for specific tickers
 - serve short-horizon stock forecasts
 - generate natural-language stock reports from predictions and news
 - reuse prior analysis through semantic caching
@@ -34,28 +34,29 @@ The current system is designed to:
 - expose operational and application metrics
 - summarize ticker-level health through monitoring outputs
 
-### 2.2 Explicitly in scope today
+### 2.2 In scope today
 
 - FastAPI backend
 - Streamlit UI
-- Redis exact-cache and task state
-- Feast configuration and local registry
+- Redis exact cache and task state
+- Feast configuration and local registry/data
 - PyTorch training and inference
 - LangGraph analysis orchestration
-- Ollama LLM + embeddings
+- Amazon Bedrock chat + embeddings
 - Chroma semantic cache
 - Prometheus + Grafana
 - MLflow + optional DagsHub integration
 - JSON artifacts in `outputs/`
+- Kubernetes / Terraform deployment assets
 
-### 2.3 Next Phase (explicitly not assumed in this doc)
+### 2.3 Not claimed as fully production-hardened
 
-- public cloud infrastructure (AWS)
-- Kubernetes deployment for this repo
-- Evidently drift reports
-- production auth / RBAC
-- ticker autocomplete / ticker search service
-- a separate React/Vue frontend
+- auth / RBAC
+- durable distributed task queue
+- comprehensive automated test suite
+- managed cloud-native feature platform
+- strict artifact version enforcement
+- advanced drift tooling such as Evidently
 
 ---
 
@@ -67,7 +68,6 @@ The current system is designed to:
 flowchart TD
     U[User] --> S[Streamlit App]
     U --> F[FastAPI API]
-
     S --> F
 
     subgraph Serving Layer
@@ -75,11 +75,11 @@ flowchart TD
         F --> PR[Prediction Endpoints]
         F --> AN[Analysis Endpoint]
         F --> MO[Monitoring Endpoint]
-        F --> MT[metrics endpoint]
+        F --> MT[/metrics]
     end
 
     subgraph ML Layer
-        TR --> FS[Feast Feature Store]
+        TR --> FS[Feast Local Repo]
         TR --> PT[PyTorch Training]
         PR --> IF[Inference Pipeline]
         PT --> ART[Model Artifacts]
@@ -88,8 +88,7 @@ flowchart TD
 
     subgraph Agent Layer
         AN --> LG[LangGraph Flow]
-        LG --> OL[Ollama LLM]
-        LG --> OE[Ollama Embeddings]
+        LG --> BR[Amazon Bedrock]
         LG --> NEWS[News Retrieval]
         NEWS --> FH[Finnhub]
         NEWS --> NA[NewsAPI]
@@ -121,7 +120,7 @@ flowchart TD
         MON --> LM[latest_monitor.json]
         LA --> OUT
         LM --> OUT
-        C --> VDB[outputs/vector_db]
+        C --> VDB[outputs/vector_db or mounted artifact dir]
     end
 ```
 
@@ -130,92 +129,65 @@ flowchart TD
 | Layer | Components | Responsibility |
 |---|---|---|
 | UI | Streamlit | Trigger API actions and render saved outputs |
-| API | FastAPI | Route requests, orchestrate training/prediction/analysis/monitoring |
+| API | FastAPI | Route requests, orchestrate training/prediction/analysis/monitoring, apply basic rate limiting |
 | ML | Feast, PyTorch pipelines | Build features, train models, run inference |
-| AI | LangGraph, Ollama, news fetchers | Generate natural-language analysis from prediction + news |
-| State | Redis, Chroma | Exact-cache, task state, semantic cache |
+| AI | LangGraph, Bedrock, news fetchers | Generate natural-language analysis from prediction + news |
+| State | Redis, Chroma | Exact cache, task state, semantic cache |
 | Observability | Prometheus, Grafana, monitoring package | Metrics, dashboards, ticker-level health summaries |
 | Tracking | MLflow, DagsHub | Experiment logging and artifact lineage |
 | Storage | outputs/, feature_store/, mlruns/ | Models, JSON reports, registry, local artifacts |
 
-### 3.3 Main interfaces
+---
 
-1. User to Streamlit
-- manual train / predict / analyze / monitor actions
-- display of saved analysis and monitoring artifacts
+## 4. Main Runtime Flows
 
-2. Streamlit to FastAPI
-- HTTP requests for live operations
+### 4.1 Training flow
 
-3. FastAPI to Redis
-- cache reads/writes
-- task status tracking
+1. request hits `POST /train-parent` or `POST /train-child`
+2. FastAPI writes running status to Redis
+3. training is offloaded to the shared executor
+4. `fetch_ohlcv(...)` downloads data and refreshes Feast local files
+5. chronological train/validation loaders are built
+6. model trains through the PyTorch loop
+7. model, scaler, and summary artifacts are saved under `outputs/`
+8. MLflow logs params, metrics, and artifacts where configured
+9. Redis task status is updated to `completed` or `failed`
 
-4. FastAPI to model pipelines
-- training and inference execution
+### 4.2 Prediction flow
 
-5. FastAPI to analysis layer
-- stock analysis orchestration via `analyze_stock()`
+1. request hits `POST /predict-parent` or `POST /predict-child`
+2. FastAPI checks Redis exact cache
+3. on miss, inference loads model + scaler from artifacts
+4. current data is fetched again through `fetch_ohlcv(...)`
+5. Feast online features are accessed if available
+6. forecast is generated and normalized for OHLC consistency
+7. prediction result is cached in Redis and returned
 
-6. FastAPI to Prometheus
-- exposes `/metrics`
+### 4.3 Analysis flow
 
-7. Training pipeline to MLflow
-- logs parameters, metrics, and artifacts
+1. request hits `POST /analyze`
+2. semantic cache is queried in Chroma
+3. if no valid hit is found, prediction data is fetched
+4. recent news is fetched from NewsAPI / Finnhub / Yahoo fallback
+5. LangGraph runs `perf` then `report`
+6. Bedrock generates the narrative output
+7. analysis is saved to latest artifact JSON and semantic cache
+8. response is returned to the client
 
-### 3.4 Main data flow
+### 4.4 Monitoring flow
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant UI as Streamlit App
-    participant API as FastAPI
-    participant Redis as Redis Exact Cache
-    participant Infer as Inference Pipeline
-    participant Chroma as Chroma Semantic Cache
-    participant Graph as LangGraph
-    participant Ollama
-    participant Outputs as outputs/
-
-    User->>UI: Request analyze / predict / monitor
-    UI->>API: HTTP request
-
-    alt Predict flow
-        API->>Redis: Check prediction cache
-        alt Prediction cache hit
-            Redis-->>API: Cached prediction
-        else Prediction cache miss
-            API->>Infer: Run prediction pipeline
-            Infer-->>API: Forecast payload
-            API->>Redis: Store prediction cache
-        end
-        API-->>UI: Prediction response
-    else Analyze flow
-        API->>Graph: analyze_stock(ticker)
-        Graph->>Chroma: Check semantic cache
-        alt Semantic cache hit
-            Chroma-->>Graph: Cached analysis
-        else Semantic cache miss
-            Graph->>Redis: Reuse or build prediction input
-            Graph->>Ollama: Run analysis graph
-            Ollama-->>Graph: Final report
-            Graph->>Chroma: Save semantic cache episode
-        end
-        API->>Outputs: Save latest_analysis.json
-        API-->>UI: Analysis response
-    else Monitor flow
-        API->>Outputs: Build and save latest_monitor.json
-        API-->>UI: Monitoring response
-    end
-```
-
-This is the main end-to-end request flow currently implemented in the repo. It focuses on the active runtime path rather than the older aspirational architecture.
+1. request hits `POST /monitor/{ticker}`
+2. system health checks Redis, Bedrock, and cache availability
+3. regime assessment compares recent vs reference market windows
+4. analysis quality checks inspect grounding and stance consistency
+5. result is written to `outputs/<ticker>/monitor/latest_monitor.json`
+6. monitoring JSON is returned
 
 ---
 
-## 4. Deployment View
+## 5. Deployment View
 
-### 4.1 Docker Compose topology
+### 5.1 Local deployment
 
 The current `docker-compose.yml` defines these services:
 
@@ -227,182 +199,93 @@ The current `docker-compose.yml` defines these services:
 
 ```mermaid
 flowchart LR
-    subgraph Docker Network: app_network
+    subgraph Docker Network
         ST[streamlit_app :8502] --> FA[fastapi :8000]
         FA --> RE[redis :6379]
         PR[prometheus :9090] --> FA
         GR[grafana :3000] --> PR
     end
-
-    HOST[Host Machine] --> ST
-    HOST --> FA
-    HOST --> PR
-    HOST --> GR
-    HOST --> RS[redis-stack UI :8001]
-
-    FA --> OH[Ollama on host]
 ```
 
-### 4.2 Current runtime assumptions
+### 5.2 Cloud deployment assets
 
-- FastAPI is containerized.
-- Redis is containerized.
-- Prometheus and Grafana are containerized.
-- Streamlit is containerized and communicates with FastAPI via the Docker network.
-- Ollama runs on the host and is accessed from FastAPI via `OLLAMA_BASE_URL`.
+The repo also contains:
 
-### 4.3 Current service URLs
+- Kubernetes manifests under [k8s](/d:/python/stock_pred_pipeline/k8s)
+- Terraform infrastructure under [terraform](/d:/python/stock_pred_pipeline/terraform)
+- GitHub Actions workflows under [.github/workflows](/d:/python/stock_pred_pipeline/.github/workflows)
 
-- FastAPI: `http://localhost:8000`
-- FastAPI docs: `http://localhost:8000/docs`
-- Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000`
-- Streamlit: `http://localhost:8502`
-- Redis Stack UI: `http://localhost:8001`
+Current cloud-oriented storage behavior in manifests and code:
+
+- FastAPI can place artifacts under `ARTIFACT_DIR`
+- `/app/outputs` is mounted to a PVC in EKS
+- Prometheus and Grafana now have PVC-backed persistence in manifests
+- Feast remains a local repo from the app’s point of view, but its `feature_store/data` path can be mounted to persistent storage
+- `FEAST_ONLINE_STORE=redis` enables a Redis online store while keeping local registry/offline files
 
 ---
 
-## 5. Backend Design
+## 6. Feature and Data Design
 
-### 5.1 FastAPI application
+### 6.1 Feature set
 
-Relevant file:
+Current default features from [config.py](/d:/python/stock_pred_pipeline/src/config.py):
 
-- `backend/main.py`
+- `Open`
+- `High`
+- `Low`
+- `Close`
+- `Volume`
+- `RSI`
+- `MACD`
 
-Implemented responsibilities:
+### 6.2 Feast design
 
-- initialize output directories
-- initialize MLflow / DagsHub integration
-- establish Redis connection during app startup
-- publish Prometheus metrics at `/metrics`
-- instrument FastAPI routes via `prometheus_fastapi_instrumentator`
-- register routes from `backend/api_endpoints.py`
+Relevant paths:
 
-Current runtime detail:
+- [feature_store/feature_store.yaml](/d:/python/stock_pred_pipeline/feature_store/feature_store.yaml)
+- [ingestion.py](/d:/python/stock_pred_pipeline/src/data/ingestion.py)
+- [inference_pipeline.py](/d:/python/stock_pred_pipeline/src/pipelines/inference_pipeline.py)
 
-- FastAPI runs with one worker
-- this is important because custom Prometheus metrics are held in-process
+Implemented behavior:
 
-### 5.2 API endpoints
+- Feast repo path is local to the application
+- registry and offline files live under `feature_store/data`
+- online serving can be configured as `sqlite` or `redis`
+- the repo writes config dynamically based on `FEAST_ONLINE_STORE`
 
-Relevant file:
+So the current design is not “Feast on S3.” It is a hybrid of:
+- local repo / registry / offline data
+- optional Redis online serving
 
-- `backend/api_endpoints.py`
+### 6.3 Data preparation and validation
 
-Implemented endpoints:
+Implemented in [ingestion.py](/d:/python/stock_pred_pipeline/src/data/ingestion.py) and [preparation.py](/d:/python/stock_pred_pipeline/src/data/preparation.py):
 
-- `GET /`
-- `GET /health`
-- `GET /status/{task_id}`
-- `POST /train-parent`
-- `POST /train-child`
-- `POST /predict-parent`
-- `POST /predict-child`
-- `POST /analyze`
-- `POST /monitor/{ticker}`
+- pull daily OHLCV from Yahoo Finance
+- compute RSI and MACD
+- validate schema, order, and minimum rows
+- drop rows with missing required values
+- fit `StandardScaler` on the chronological training partition only
+- generate rolling context/future windows
 
-### 5.3 API behavior patterns
+### 6.4 Outlier visibility
 
-#### Async task pattern
+Training summaries now include simple IQR-based outlier counts per feature plus total rows with any detected outlier, computed in [train_pipeline.py](/d:/python/stock_pred_pipeline/src/pipelines/train_pipeline.py).
 
-Training endpoints write task status into Redis and return early.
-
-#### Exact-cache pattern
-
-Prediction endpoints use Redis through `get_or_set_cache(...)`.
-
-#### Auto-train pattern
-
-If a model artifact is missing during predict/analyze, the backend can start training and return a `training` response.
-
-#### Artifact-save pattern
-
-- `/analyze` writes `outputs/<ticker>/latest_analysis.json`
-- `/monitor/{ticker}` writes `outputs/<ticker>/monitor/latest_monitor.json`
+This is observability for outliers, not full outlier treatment.
 
 ---
 
-## 6. ML Pipeline Design
+## 7. Model Design
 
-### 6.1 Configuration
+### 7.1 Architecture
 
-Relevant file:
+The implemented forecasting model is `StockLSTM` in [definition.py](/d:/python/stock_pred_pipeline/src/model/definition.py).
 
-- `src/config.py`
+This repo does not currently implement a Transformer-based forecaster.
 
-Current defaults include:
-
-- parent ticker: `^NSEI`
-- context length: `60`
-- prediction horizon: `5`
-- features:
-  - `Open`
-  - `High`
-  - `Low`
-  - `Close`
-  - `Volume`
-  - `RSI`
-  - `MACD`
-- device chosen dynamically from CUDA/CPU
-- parent artifacts under `outputs/parent`
-- general output root `outputs`
-
-### 6.2 Feature store
-
-Relevant files:
-
-- `feature_store/feature_store.yaml`
-- `feature_store/features.py`
-
-Current explicit config in `feature_store.yaml`:
-
-- `project: stock_prediction`
-- `provider: local`
-- `registry: data/registry.db`
-
-This repo includes a local Feast registry and feature-store directory. This design doc does not claim extra online-store behavior beyond explicit configuration.
-
-### 6.3 Data pipeline flow
-
-Relevant areas:
-
-- `src/data/...`
-- `feature_store/...`
-- `src/pipelines/...`
-
-At a high level, the current repo follows this data path:
-
-```mermaid
-flowchart LR
-    A[Yahoo Finance Market Data] --> B[OHLCV Preparation]
-    B --> C[Feature Engineering]
-    C --> D[Feast-backed Feature Access]
-    D --> E[Training Dataset]
-    D --> F[Inference Context]
-    E --> G[Parent and Child Training]
-    F --> H[Prediction Pipeline]
-```
-
-This is intentionally high-level because the document only describes the feature-store and pipeline behavior that is clearly present in the repo.
-
-### 6.4 Training architecture
-
-Relevant area:
-
-- `src/pipelines/train_pipeline.py`
-
-The current system follows a parent/child structure:
-
-1. Parent model
-- trained on a broad market ticker
-- provides a reusable starting point
-
-2. Child model
-- trained for a specific stock ticker
-- uses transfer learning from the parent model
-
-### 6.5 Transfer learning architecture
+### 7.2 Parent-child transfer flow
 
 ```mermaid
 flowchart TD
@@ -412,563 +295,159 @@ flowchart TD
     E[Ticker-specific Training Data] --> F[Child Model Training]
     D --> F
     F --> G[Child Model Artifact]
-    B --> H[MLflow Logging]
-    F --> H
 ```
 
-The current repo supports the parent-to-child training pattern. This document does not claim a more detailed freeze/fine-tune strategy unless explicitly visible in code.
+Current child adaptation modes:
 
-### 6.6 Training pipeline flow
+- `freeze`
+- `fine_tune`
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as FastAPI
-    participant Redis
-    participant Train as Training Pipeline
-    participant Feast
-    participant Torch as PyTorch Model
-    participant MLflow
-    participant Outputs
+### 7.3 Inference safeguards
 
-    Client->>API: POST /train-parent or /train-child
-    API->>Redis: set task status = running
-    API->>Train: start async training
-    Train->>Feast: fetch or materialize features
-    Feast-->>Train: training features
-    Train->>Torch: train model
-    Torch-->>Train: trained weights
-    Train->>Outputs: save artifacts
-    Train->>MLflow: log params, metrics, artifacts
-    Train->>Redis: set task status = completed
-    API-->>Client: training accepted / task status available
-```
+Inference in [inference.py](/d:/python/stock_pred_pipeline/src/inference.py) applies forecast sanity normalization so returned OHLC rows remain physically consistent.
 
-### 6.7 Inference architecture
+That includes:
 
-Relevant area:
-
-- `src/pipelines/inference_pipeline.py`
-
-Inference behavior in the current system:
-
-- load model artifacts
-- fetch current feature context
-- generate a short-horizon forecast
-- cache the result in Redis
-- return prediction payload including recent history and forecast window
-
-### 6.8 Inference pipeline flow
-
-```mermaid
-flowchart TD
-    A[Prediction Request] --> B{Redis Exact Cache Hit?}
-    B -->|Yes| C[Return Cached Prediction]
-    B -->|No| D{Model Artifact Present?}
-    D -->|No| E[Return Training Response / Auto-train Path]
-    D -->|Yes| F[Load Model Artifact]
-    F --> G[Fetch Current Feature Context]
-    G --> H[Run Inference]
-    H --> I[Build Prediction Payload]
-    I --> J[Write Redis Cache]
-    J --> K[Return Prediction]
-```
-
-### 6.9 ML flow diagram
-
-```mermaid
-flowchart TD
-    A[Raw Market Data] --> B[Feature Engineering]
-    B --> C[Feast-backed Feature Access]
-    C --> D[Parent Training]
-    D --> E[Parent Model Artifact]
-    E --> F[Child Training]
-    F --> G[Child Model Artifact]
-    G --> H[Inference Pipeline]
-    H --> I[Prediction Response]
-    D --> J[MLflow]
-    F --> J
-```
+- correcting swapped high/low order
+- clamping open/close into the final `[low, high]` range
+- ensuring volume is non-negative
 
 ---
 
-## 7. Agentic Analysis Design
+## 8. Agentic Analysis Design
 
-### 7.1 Current orchestration
+### 8.1 Current graph
 
-Relevant file:
+The active graph in [langgraph_wrapper.py](/d:/python/stock_pred_pipeline/src/agents/langgraph_wrapper.py) uses two nodes:
 
-- `src/agents/langgraph_wrapper.py`
+- `perf`
+- `report`
 
-Implemented graph today:
+### 8.2 Model and cache behavior
 
-- `perf` node
-- `report` node
+- Bedrock chat is used for narrative generation
+- Bedrock embeddings are used for semantic recall
+- Chroma stores prior analysis episodes
+- cached `.NS` analysis with empty news is treated as stale and refreshed
 
+### 8.3 Source of truth split
 
-### 7.2 Current active agent roles
+The current design treats:
 
-Relevant file:
+- structured forecast JSON as the source of truth for numeric expectations
+- LLM output as the narrative explanation layer
 
-- `src/agents/agents.py`
-
-Active analysis flow currently uses:
-
-1. Performance analyst
-- interprets forecast data
-- extracts direction and trading summary
-
-2. Report generator
-- combines forecast signal and news context
-- produces final recommendation and confidence
-
-### 7.3 Analysis data sources
-
-Relevant file:
-
-- `src/agents/fetch.py`
-
-Analysis uses two major inputs:
-
-1. Prediction data
-- fetched from the prediction path
-- benefits from Redis exact-cache
-
-2. News data
-- `.NS` tickers prefer NewsAPI first
-- other tickers attempt Finnhub first
-- fallback behavior includes Yahoo/yfinance sources where available
-
-### 7.4 Analysis sequence
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as FastAPI
-    participant Cache as Chroma
-    participant Pred as Prediction Fetch
-    participant News as News Retrieval
-    participant Graph as LangGraph
-    participant Ollama
-
-    Client->>API: POST /analyze
-    API->>Graph: analyze_stock(ticker)
-    Graph->>Cache: semantic recall
-    alt Semantic cache hit
-        Cache-->>Graph: cached episode
-        Graph-->>API: cached analysis response
-    else Cache miss or stale empty-news cache
-        Graph->>Pred: fetch prediction data
-        Pred-->>Graph: prediction payload
-        Graph->>News: fetch news
-        News-->>Graph: news sentiment text
-        Graph->>Ollama: run perf/report nodes
-        Ollama-->>Graph: final report
-        Graph->>Cache: save semantic episode
-        Graph-->>API: fresh analysis response
-    end
-    API-->>Client: analysis JSON
-```
-
-### 7.5 Ollama execution flow
-
-```mermaid
-flowchart TD
-    A[Analyze Request] --> B[Load Prediction Context]
-    B --> C[Fetch News Context]
-    C --> D[Build LangGraph State]
-    D --> E[Performance Node Prompt]
-    E --> F[Ollama LLM Call]
-    F --> G[Intermediate Agent State]
-    G --> H[Report Node Prompt]
-    H --> I[Ollama LLM Call]
-    I --> J[Final Report + Recommendation + Confidence]
-    J --> K[Save Semantic Cache Episode]
-    K --> L[Return Analysis Result]
-```
-
-This reflects the current two-node analysis flow. It does not assume the older four-agent orchestration from the reference document.
-
-### 7.6 Semantic cache design
-
-Relevant file:
-
-- `src/memory/semantic_cache.py`
-
-Current implementation details:
-
-- backend store: Chroma persistent client
-- path: `outputs/vector_db`
-- collection: `analysis_cache`
-- stores:
-  - summary
-  - final report
-  - recommendation
-  - confidence
-  - prediction JSON
-  - news sentiment
-  - llm model
-  - embed model
-  - news_empty
-  - thread metadata
-  - timestamp metadata
-
-Special logic currently implemented:
-
-- cached `.NS` analysis with empty news is treated as stale and refreshed instead of always reused
+Response-quality monitoring explicitly checks whether the report remains grounded in the forecast.
 
 ---
 
-## 8. Caching and State Design
+## 9. Cache, State, and Rate Limiting
 
-### 8.1 Redis responsibilities
-
-Relevant files:
-
-- `backend/tasks.py`
-- `backend/state.py`
+### 9.1 Redis responsibilities
 
 Redis is used for:
 
-1. Exact-cache
-- prediction cache keys such as `predict_child:<ticker>`
+- prediction exact cache
+- training task state
+- simple rate limiting
+- health visibility
 
-2. Async task state
-- task status keys such as `task_status:<task_id>`
-
-3. backend health integration
-- Redis availability reflected in system metrics and health checks
-
-### 8.2 Chroma responsibilities
+### 9.2 Chroma responsibilities
 
 Chroma is used for:
 
 - semantic recall of prior analysis for the same ticker
 - persistence of analysis episodes
 
-### 8.3 Cache/state diagram
+### 9.3 Rate limiting
 
-```mermaid
-flowchart LR
-    A[Prediction Request] --> R[Redis Exact Cache]
-    R -->|Hit| P1[Return Cached Prediction]
-    R -->|Miss| P2[Run Inference]
-    P2 --> R
+A simple IP-based rate limiter is implemented in [rate_limit.py](/d:/python/stock_pred_pipeline/backend/rate_limit.py) and applied as FastAPI middleware in [main.py](/d:/python/stock_pred_pipeline/backend/main.py).
 
-    B[Analysis Request] --> C[Chroma Semantic Cache]
-    C -->|Hit| A1[Return Cached Analysis]
-    C -->|Miss| A2[Rebuild Analysis]
-    A2 --> C
+Current characteristics:
 
-    T[Training Request] --> TS[Redis Task State]
-    TS --> ST[status endpoint]
-```
+- request count window controlled by env vars
+- Redis-backed when Redis is available
+- in-memory fallback when Redis is unavailable
+- health and metrics endpoints are exempt
+
+This is intentionally lightweight, not a full gateway-grade policy engine.
 
 ---
 
-## 9. Monitoring and Observability Design
+## 10. Monitoring and Observability
 
-### 9.1 Metrics monitoring
+### 10.1 Prometheus and Grafana
 
-Relevant files:
+Prometheus scrapes `/metrics` from FastAPI.
+Grafana reads from Prometheus.
 
-- `backend/state.py`
-- `backend/main.py`
-- `prometheus/prometheus.yml`
-- `grafana/...`
+In the AWS/EKS manifests, both services now support EBS-backed persistence through PVCs.
 
-Current observability stack:
+### 10.2 Ticker-level monitoring
 
-- FastAPI exposes `/metrics`
-- Prometheus scrapes `/metrics`
-- Grafana visualizes Prometheus metrics
+Implemented in [monitoring](/d:/python/stock_pred_pipeline/monitoring):
 
-### 9.2 Custom Prometheus metrics
+- `health_checks.py`
+- `regime.py`
+- `response_quality.py`
+- `run_monitoring.py`
 
-Metrics currently defined include categories such as:
+The monitoring result includes:
 
-- system CPU / RAM / disk
-- Redis status and key count
-- training status and duration
-- prediction counters and latency
-- cache hit / miss counters
-- analysis counters, failures, and latency
-- analysis cache hit / miss counters
+- `system`
+- `regime`
+- `analysis_quality`
 
-### 9.3 Custom ticker monitoring
-
-Relevant files:
-
-- `monitoring/health_checks.py`
-- `monitoring/regime.py`
-- `monitoring/response_quality.py`
-- `monitoring/run_monitoring.py`
-
-The ticker-level monitoring flow currently computes:
-
-1. System health
-- Redis reachable
-- Ollama reachable
-- prediction cache available
-- semantic cache available
-
-2. Regime assessment
-- reference and current windows from Yahoo Finance data
-- metrics:
-  - `return_drift_score`
-  - `volatility_ratio`
-  - `volume_shift_score`
-  - `price_range_shift_score`
-
-3. Analysis quality
-- whether analysis ran
-- recommendation validity
-- confidence validity
-- forecast grounding
-- stance consistency
-- news honesty
-- report non-emptiness
-
-### 9.4 Monitoring sequence
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as FastAPI
-    participant Runner as run_monitoring
-    participant Health as health_checks
-    participant Regime as regime.py
-    participant Quality as response_quality.py
-    participant Files as outputs/
-
-    Client->>API: POST /monitor/{ticker}
-    API->>Runner: run_monitoring(ticker)
-    Runner->>Health: check_system_health
-    Runner->>Regime: assess_regime
-    Runner->>Quality: evaluate_analysis_quality
-    Quality-->>Runner: analysis quality summary
-    Regime-->>Runner: regime summary
-    Health-->>Runner: system summary
-    Runner->>Files: write latest_monitor.json
-    Runner-->>API: monitor response
-    API-->>Client: monitor JSON
-```
-
-### 9.5 Drift flow
-
-```mermaid
-flowchart TD
-    A[Monitor Request] --> B[Fetch Reference Window]
-    B --> C[Fetch Current Window]
-    C --> D{Sufficient Data?}
-    D -->|No| E[Return Warning with Insufficient Data]
-    D -->|Yes| F[Compute Return Drift Score]
-    F --> G[Compute Volatility Ratio]
-    G --> H[Compute Volume Shift Score]
-    H --> I[Compute Price Range Shift Score]
-    I --> J[Assign Healthy / Warning / Critical]
-    J --> K[Write Regime Summary into latest_monitor.json]
-```
-
-This reflects the current custom regime assessment in `monitoring/regime.py`, which compares recent and reference OHLCV windows and derives heuristic drift metrics.
+The regime and quality logic is heuristic but useful for operator visibility.
 
 ---
 
-## 10. Streamlit Dashboard Design
+## 11. Security and Production Readiness Notes
 
-### 10.1 Current role
+What exists now:
 
-Relevant file:
+- environment-based secret loading
+- Kubernetes secret support in manifests
+- simple rate limiting
+- Prometheus observability
+- health endpoints
 
-- `streamlit_app/app.py`
+What is still missing:
 
-The Streamlit app currently serves as a thin operational dashboard.
-
-It allows users to:
-
-- trigger child training
-- trigger prediction
-- trigger analysis
-- trigger monitoring
-- check training task status
-- inspect saved `latest_analysis.json`
-- inspect saved `latest_monitor.json`
-- view forecast chart/table
-- view monitor summary tables
-
-### 10.2 Current data access pattern
-
-The dashboard uses two sources:
-
-1. Live API access
-- FastAPI endpoints for active operations
-
-2. Local artifact reads
-- `outputs/<ticker>/latest_analysis.json`
-- `outputs/<ticker>/monitor/latest_monitor.json`
-
-This means the Streamlit UI is not a standalone full system by itself. It depends on backend services for live actions.
+- auth / authorization
+- tightened CORS policy
+- robust abuse controls
+- artifact integrity checks
+- durable distributed task queue
+- comprehensive automated testing
 
 ---
 
-## 11. Experiment Tracking Design
+## 12. Current Limitations
 
-### 11.1 Current implementation
+The most important limitations to state honestly are:
 
-Relevant file:
-
-- `src/utils.py`
-
-Current behavior:
-
-- loads env vars through `.env`
-- initializes DagsHub if repo/user vars are provided
-- sets MLflow tracking URI
-- sets MLflow registry URI to the same tracking URI when possible
-- configures MLflow auth via DagsHub token if available
-
-### 11.2 Actual scope in this repo
-
-Experiment tracking is primarily tied to training flows.
-This design doc does not claim a separate deployment pipeline or model promotion workflow beyond MLflow logging and artifact storage.
+- no full test suite yet
+- no queue-based worker architecture
+- LLM reports are still probabilistic and prompt-constrained, not guaranteed factual
+- Feast is still app-local in structure, even when persisted on PVC
+- model calibration in price space can still drift
+- outlier handling is not yet corrective, only measured
+- monitoring uses heuristics rather than formal model-risk tooling
 
 ---
 
-## 12. Artifact and Storage Design
+## 13. Recommended Reading Order
 
-### 12.1 Output conventions
-
-Current important artifact paths include:
-
-- `outputs/<ticker>/latest_analysis.json`
-- `outputs/<ticker>/monitor/latest_monitor.json`
-- model and training summary files under `outputs/<ticker>/...`
-- semantic cache under `outputs/vector_db`
-
-### 12.2 Other persisted data
-
-- Feast registry under `feature_store/data/registry.db`
-- local MLflow files under project-local paths when used
-- Redis Docker volume
-- Grafana Docker volume
-
-### 12.3 Artifact flow
-
-```mermaid
-flowchart TD
-    T[Training] --> M1[Model Artifacts]
-    A[Analysis] --> J1[latest_analysis.json]
-    MON[Monitoring] --> J2[latest_monitor.json]
-    SC[Semantic Cache] --> V[outputs/vector_db]
-    M1 --> OUT[outputs/<ticker>/...]
-    J1 --> OUT
-    J2 --> OUT
-```
-
----
-
-## 13. API Data Flow Details
-
-### 13.1 Train child flow
-
-1. request hits `POST /train-child`
-2. backend checks Redis task state
-3. if not already running, async training starts
-4. task status is saved in Redis
-5. training artifacts are written under `outputs/`
-6. MLflow may log the run
-
-### 13.2 Predict child flow
-
-1. request hits `POST /predict-child`
-2. backend checks Redis exact-cache
-3. on miss, inference runs
-4. result is cached and returned
-5. on missing model artifacts, auto-training can be triggered
-
-### 13.3 Analyze flow
-
-1. request hits `POST /analyze`
-2. semantic cache is queried
-3. if cache is valid, cached analysis is returned
-4. otherwise prediction + news are fetched
-5. LangGraph/Ollama produce analysis
-6. result is saved to `latest_analysis.json`
-7. semantic cache is updated
-
-### 13.4 Monitor flow
-
-1. request hits `POST /monitor/{ticker}`
-2. system health, regime, and analysis quality checks are run
-3. result is saved to `latest_monitor.json`
-4. result is returned to client
-
----
-
-## 14. Performance Metrics
-
-### 14.1 Local baseline measurements
-
-The following numbers were measured on the current local setup without adding benchmark-specific code. They reflect a single-machine run with Docker Compose services, host Ollama, Redis cache and Chroma semantic cache.
-
-| Operation | Measurement | Notes |
-|---|---:|---|
-| `POST /train-child` request acceptance | `2.71 s` | time for API to accept and enqueue the training task |
-| Child training actual duration | `151 s` | measured from `start_time=2026-04-01 10:44:13` to `completed_at=2026-04-01 10:46:44` |
-| `POST /predict-child` fresh call | `5.64 s` | first prediction call after training |
-| `POST /predict-child` cached call | `0.39 s` | second call served through Redis exact-cache |
-| `POST /analyze` fresh call | `45.70 s` | full analysis path with prediction + news + Ollama generation |
-| `POST /analyze` semantic-cache hit | `1.59 s` | repeated call with `metadata.source_cache = semantic_cache` |
-| `POST /monitor/{ticker}` | `3.47 s` | monitor run for the same ticker |
-
-### 14.2 Interpretation
-
-These measurements show the two main cache layers working as intended:
-
-- Redis exact-cache reduces prediction latency from about `5.64 s` to about `0.39 s`.
-- Chroma semantic cache reduces analysis latency from about `45.70 s` to about `1.59 s`.
-- Child training remains a minutes-scale operation rather than a request/response operation.
-- Monitoring is materially lighter than a fresh analysis run because it reuses saved artifacts and cache-backed analysis where available.
-
-### 14.3 Measurement notes
-
-The values above were collected using a new ticker, `ICICIBANK.NS`, to avoid contamination from previously cached prediction and analysis results.
-
-The measurement method used was:
-
-- `Measure-Command` around API calls for request latency
-- `GET /status/{task_id}` timestamps for actual child-training duration
-- repeat calls to distinguish fresh vs cached behavior
-
-These values should be treated as **local baseline measurements**, not production SLOs or cloud-scale guarantees.
-
-## 15. Current Limitations and Operational Notes
-
-### 15.1 Known design characteristics
-
-- FastAPI intentionally runs with one worker for metric consistency.
-- `GET /status/{task_id}` is only for async training task state.
-- `POST /train-child` can start another training run after prior completion.
-- monitoring outputs are heuristic signals, not automatic retrain decisions.
-- Streamlit live actions depend on FastAPI being reachable.
-
-
-## 16. Recommended code reading order
-
-For someone trying to understand the implementation, a practical order is:
-
-1. `README.md`
-2. `docker-compose.yml`
-3. `backend/main.py`
-4. `backend/api_endpoints.py`
-5. `backend/state.py`
-6. `backend/tasks.py`
-7. `src/config.py`
-8. `src/pipelines/...`
-9. `src/agents/langgraph_wrapper.py`
-10. `src/agents/fetch.py`
-11. `src/memory/semantic_cache.py`
-12. `monitoring/...`
-13. `streamlit_app/app.py`
-
-
+1. [README.md](/d:/python/stock_pred_pipeline/README.md)
+2. [docker-compose.yml](/d:/python/stock_pred_pipeline/docker-compose.yml)
+3. [main.py](/d:/python/stock_pred_pipeline/backend/main.py)
+4. [api_endpoints.py](/d:/python/stock_pred_pipeline/backend/api_endpoints.py)
+5. [tasks.py](/d:/python/stock_pred_pipeline/backend/tasks.py)
+6. [config.py](/d:/python/stock_pred_pipeline/src/config.py)
+7. [train_pipeline.py](/d:/python/stock_pred_pipeline/src/pipelines/train_pipeline.py)
+8. [inference_pipeline.py](/d:/python/stock_pred_pipeline/src/pipelines/inference_pipeline.py)
+9. [langgraph_wrapper.py](/d:/python/stock_pred_pipeline/src/agents/langgraph_wrapper.py)
+10. [semantic_cache.py](/d:/python/stock_pred_pipeline/src/memory/semantic_cache.py)
+11. [run_monitoring.py](/d:/python/stock_pred_pipeline/monitoring/run_monitoring.py)
+12. [app.py](/d:/python/stock_pred_pipeline/streamlit_app/app.py)

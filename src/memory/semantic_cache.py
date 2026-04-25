@@ -7,10 +7,12 @@ from typing import Any
 import chromadb
 from chromadb.config import Settings
 
+from src.config import Config
+
 
 class SemanticCache:
-    def __init__(self, db_path: str = "outputs/vector_db", collection_name: str = "analysis_cache"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None, collection_name: str = "analysis_cache"):
+        self.db_path = db_path or os.path.join(Config().workdir, "vector_db")
         self.collection_name = collection_name
 
         chroma_host = os.getenv("CHROMA_HOST", "").strip()

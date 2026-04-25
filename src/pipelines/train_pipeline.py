@@ -135,8 +135,37 @@ def _build_dataset_and_loaders(df, config: Config):
         "val_size": int(len(val_dataset)),
         "train_rows": int(len(train_df)),
         "val_rows": int(len(val_df)),
+        **_compute_outlier_stats(df, config),
     }
     return scaler, train_loader, val_loader, dataset_stats
+
+
+def _compute_outlier_stats(df, config: Config) -> Dict[str, int]:
+    stats: Dict[str, int] = {}
+    any_outlier_mask = None
+
+    for column in config.features:
+        series = df[column].dropna()
+        key = f"iqr_outliers_{column.lower()}"
+        if len(series) < 4:
+            stats[key] = 0
+            continue
+
+        q1 = float(series.quantile(0.25))
+        q3 = float(series.quantile(0.75))
+        iqr = q3 - q1
+        if iqr <= 0:
+            stats[key] = 0
+            continue
+
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+        column_mask = (df[column] < lower) | (df[column] > upper)
+        stats[key] = int(column_mask.sum())
+        any_outlier_mask = column_mask if any_outlier_mask is None else (any_outlier_mask | column_mask)
+
+    stats["rows_with_any_iqr_outlier"] = int(any_outlier_mask.sum()) if any_outlier_mask is not None else 0
+    return stats
 
 
 def _log_training_run(config: Config, ticker: str, metrics: Dict[str, float], model_type: str, dataset_stats: Dict[str, int]) -> None:
@@ -348,3 +377,4 @@ def train_child_models(tickers: Optional[List[str]] = None) -> List[Dict]:
         results.append(train_child_model(ticker))
 
     return results
+

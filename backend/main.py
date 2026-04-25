@@ -4,18 +4,19 @@ from contextlib import asynccontextmanager
 
 import redis
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from backend.state import registry, REDIS_STATUS
-from backend.tasks import refresh_system_metrics
-import backend.state as app_state
 from backend.api_endpoints import router
+from backend.rate_limit import check_rate_limit, rate_limit_response
+from backend.state import REDIS_STATUS, registry
+from backend.tasks import refresh_system_metrics
 from logger.logger import get_logger
 from src.utils import init_dir, setup_dagshub_mlflow
+import backend.state as app_state
 
 logger = get_logger()
 
@@ -80,6 +81,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def apply_rate_limit(request: Request, call_next):
+    allowed, headers = check_rate_limit(request)
+    if not allowed:
+        return rate_limit_response(headers)
+
+    response = await call_next(request)
+    for key, value in headers.items():
+        response.headers[key] = value
+    return response
+
+
 app.include_router(router)
 
 
@@ -87,6 +101,7 @@ app.include_router(router)
 async def prometheus_metrics():
     refresh_system_metrics()
     return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
+
 
 Instrumentator(registry=registry).instrument(app)
 

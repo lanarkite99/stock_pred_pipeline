@@ -34,6 +34,8 @@ spec:
           value: aws
         - name: ARTIFACT_DIR
           value: /app/outputs
+        - name: FEAST_ONLINE_STORE
+          value: redis
         envFrom:
         - secretRef:
             name: stock-pred-secrets
@@ -59,10 +61,15 @@ spec:
         volumeMounts:
         - name: outputs-volume
           mountPath: /app/outputs
+        - name: feature-store-data-volume
+          mountPath: /app/feature_store/data
       volumes:
       - name: outputs-volume
         persistentVolumeClaim:
           claimName: outputs-pvc
+      - name: feature-store-data-volume
+        persistentVolumeClaim:
+          claimName: feature-store-data-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -76,5 +83,3 @@ spec:
     targetPort: 8000
   selector:
     app: fastapi
-
-
