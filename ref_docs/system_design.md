@@ -75,7 +75,7 @@ flowchart TD
         F --> PR[Prediction Endpoints]
         F --> AN[Analysis Endpoint]
         F --> MO[Monitoring Endpoint]
-        F --> MT[/metrics]
+        F --> MT["metrics endpoint"]
     end
 
     subgraph ML Layer
@@ -115,7 +115,7 @@ flowchart TD
     end
 
     subgraph Storage
-        ART --> OUT[outputs/<ticker>/...]
+        ART --> OUT["outputs per ticker"]
         LG --> LA[latest_analysis.json]
         MON --> LM[latest_monitor.json]
         LA --> OUT
@@ -451,3 +451,4 @@ The most important limitations to state honestly are:
 10. [semantic_cache.py](/d:/python/stock_pred_pipeline/src/memory/semantic_cache.py)
 11. [run_monitoring.py](/d:/python/stock_pred_pipeline/monitoring/run_monitoring.py)
 12. [app.py](/d:/python/stock_pred_pipeline/streamlit_app/app.py)
+

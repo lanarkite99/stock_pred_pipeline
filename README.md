@@ -49,7 +49,7 @@ flowchart TD
     F --> PR[Prediction Endpoints]
     F --> AN[Analysis Endpoint]
     F --> MO[Monitor Endpoint]
-    F --> MT[/metrics]
+    F --> MT["metrics endpoint"]
 
     TR --> ML[Training Pipeline]
     PR --> IF[Inference Pipeline]
@@ -70,7 +70,7 @@ flowchart TD
     MT --> PM[Prometheus]
     PM --> GR[Grafana]
 
-    ART --> OUT[outputs/<ticker>/...]
+    ART --> OUT["outputs per ticker"]
     MON --> OUT
 ```
 
@@ -318,3 +318,4 @@ lets connect!
 <a href="https://lanarkite99.substack.com/" target="_blank">
     <img src="https://img.shields.io/badge/Substack-FF6719?style=for-the-badge&logo=substack&logoColor=white" alt="Substack"/>
 </a>
+
